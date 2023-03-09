@@ -693,7 +693,7 @@ void pollRadio(void) {
   // * - check CRC
   // * - process values if CRC OK
   uint16_t crc; // CRC16 XModem Value
-  if (radio.receiveDone()) {    
+  if (radio.receiveDone()) {         
     DBG_RFM.println("Packet received: ");    
     msgStr = "{";    
     // millis
@@ -749,6 +749,8 @@ void pollRadio(void) {
       parseIssData();
       sendIssMqtt();
     } else {            
+      // don`t try  again on same channel      
+      radio._packetReceived = false;
       DBG_RFM.println("Wrong CRC");        
       msgStr.concat(", \"CRC\":\"ERROR\"");    
       g_crcErrors++;
