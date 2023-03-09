@@ -265,7 +265,7 @@ void cmd_hello(MyCommandParser::Argument *args, char *response) {
 void cmd_newday(MyCommandParser::Argument *args, char *response) {  
   String msgStr;    
   g_rainClicksDay = 0;
-  msgStr = "Daily Raincounter set to 0";    
+  msgStr = "Daily Rain-Click counter set to 0";    
   msgStr.toCharArray(response, MyCommandParser::MAX_RESPONSE_SIZE);
 }
 

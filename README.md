@@ -54,11 +54,17 @@ Receive data from Davis Vantage Vue ISS - Weather Station and publish Measuremen
 * Commands must be published to topic `[PREFIX]/cmd`
 * Responses are published to `[PREFIX]/result`
 
-## Print Text on Display and scroll
-### `display "String"`
-Display `String` on the LCD, scroll if needed
+## Reset Daily Rain-Click Counter to 0
+### `cmd_newday`
  Example:
- * command: `display "Hello World"` 
+ * command: `cmd_newday` 
+ * response: `Daily Rain-Click counter set to 0` :
+
+## Set Rain-Click Counter
+### `cmd_setrc [newvalue]`
+ Example:
+ * command: `cmd_setrc 42` 
+ * response: `Raincounter set to 42` :
 
 ## System related Commands
 ### `reset`
