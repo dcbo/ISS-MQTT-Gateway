@@ -1,6 +1,7 @@
 # ISS-MQTT-Gateway
 Receive data from Davis Vantage Vue ISS - Weather Station and publish Measurements via MQTT
 
+![Davis Vantage VUE ISS](/doc/vantage_vue_iss.jpg)
 # Hardware
   * ESP 32 
   * Hope RFM69 Module @ 868MHz
