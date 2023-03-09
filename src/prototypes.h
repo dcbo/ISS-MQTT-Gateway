@@ -35,5 +35,4 @@ void   setupRadio(void);
 void   pollRadio(void);
 void   parseIssData(void);
 void   sendIssMqtt(void);
-void   sendRFMState(boolean);
 #endif
