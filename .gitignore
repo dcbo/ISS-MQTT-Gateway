@@ -1,0 +1,7 @@
+.pio
+.vscode
+data
+test
+platformio.ini
+workspace.code-workspace 
+compile_commands.json

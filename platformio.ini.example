@@ -1,0 +1,137 @@
+; ####################################################################################################################################
+; # PlatformIO Project Example-Configuration File
+; # 
+; # - Versions are incremented after each upload, regardingless which environment
+; # - The Binary is copied to the release directory after uploading to 'OTA-Prod'
+; # 
+; # This settings are used in the code an must be set here:
+; # 
+; # ### Makros used in Source ###
+; #   '-DMQTT_PREFIX="esp32/bme680"'                     // prefix for all MQTT-topics
+; #   '-DWIFI_SSID="mySSID"'                             // WiFi SSID  
+; #   '-DWIFI_PSK="myWiFiPassword"'                      // WiFi Password
+; #   '-DMQTT_SERVER="mqtt.example.de"'	                 // MQTT Server
+; #   '-DMQTT_PORT=1883'	                             // MQTT Port
+; #   '-DMQTT_USER="Username"'                           // MQTT Username  DELETE if not needed
+; #   '-DMQTT_PASS="myMQTTPassword"'                     // MQTT Password  DELETE if not needed 
+; #   '-DOTA_HASH="[MD5-Hash_from_OTA-PASS]"'            // MD5-Hash of OTA-Password, e.g: MD5("OTAAccessESP32") = "80e98f64761e74aae38bdea95f9ccefd"
+; #
+; # ### Upload Params ###
+; #   upload_port = 192.168.1.123                        // IP-Address of device used for OTA Flashing
+; #   upload_flags = 
+; #      --auth=[OTA-PASS]                               // OTA-Password matching Entry "-DOTA_HASH"
+; #
+; ####################################################################################################################################
+
+[platformio]
+default_envs = OTA-Prod
+description = Davis Vue ISS-MQTT-Gateway
+
+; ############################################
+; # First Flash over Serial, to enable OTA
+; # - flashed using Serial-Port
+; # - Publishes on Topic: "esp32/weather-serial"
+; # - after reboot, subscibe to "esp32/weather-serial/network" to get IP
+; # - Insert IP to other Targets
+; #   - upload_protocol = espota
+; #   - upload_port = [IP]
+; ############################################
+[env:Serial]
+platform = espressif32
+board = esp32doit-devkit-v1
+framework = arduino
+build_flags = 
+    '-DTARGET="Serial"'
+    '-DMQTT_PREFIX="esp32/weather-serial"'
+    '-DWIFI_SSID="MYWIFISSID"'
+    '-DWIFI_PSK="MYWIFIPASSWORD"'
+    '-DMQTT_SERVER="mqtt.example.de"'
+    '-DMQTT_PORT=1883'
+    '-DMQTT_USER="Username"'
+    '-DMQTT_PASS="myMQTTPassword"'
+    '-DOTA_HASH="80e98f64761e74aae38bdea95f9ccefd"'
+monitor_port = com9
+monitor_speed = 115200
+monitor_filters = time, default
+upload_protocol = esptool
+upload_port = com9
+lib_deps = 
+    physee/SimpleTime@^1.0
+    uberi/CommandParser@^1.1.0
+    knolleary/PubSubClient@^2.8
+    
+extra_scripts = 
+    pre:version_increment/version_increment_pre.py      
+    post:version_increment/version_increment_post.py
+
+; ############################################
+; # Productive Target
+; # - OTA-flashed over WiFi
+; # - Publishes on Topic: "esp32/weather"
+; ############################################
+[env:OTA-Prod]
+platform = espressif32
+board = esp32doit-devkit-v1
+framework = arduino
+; monitor_port = com9
+; monitor_speed = 115200
+monitor_filters = time, default
+build_flags = 
+    '-DTARGET="OTA-Prod"'	
+    '-DMQTT_PREFIX="esp32/weather"'
+    '-DWIFI_SSID="MYWIFISSID"'
+    '-DWIFI_PSK="MYWIFIPASSWORD"'
+    '-DMQTT_SERVER="mqtt.example.de"'
+    '-DMQTT_PORT=1883'
+    '-DMQTT_USER="Username"'
+    '-DMQTT_PASS="myMQTTPassword"'
+    '-DOTA_HASH="80e98f64761e74aae38bdea95f9ccefd"'
+upload_protocol = espota
+upload_port = 192.168.1.111
+upload_flags = 
+    --port=3232
+    --auth=OTAAccessESP32
+lib_deps = 
+    physee/SimpleTime@^1.0
+    uberi/CommandParser@^1.1.0
+    knolleary/PubSubClient@^2.8
+
+extra_scripts = 
+    pre:version_increment/version_increment_pre.py   
+    post:version_increment/copy_bin_2_release.py
+    post:version_increment/version_increment_post.py
+
+; ############################################
+; # Test-Target
+; # - OTA-flashed over WiFi
+; # - Publishes on Topic: "esp32/weather-test"
+; ############################################
+[env:OTA-Test]
+platform = espressif32
+board = esp32doit-devkit-v1
+framework = arduino
+monitor_port = com9
+monitor_speed = 115200
+build_flags = 
+    '-DTARGET="OTA-Test"'	
+    '-DMQTT_PREFIX="esp32/weather-test"'
+    '-DWIFI_SSID="MYWIFISSID"'
+    '-DWIFI_PSK="MYWIFIPASSWORD"'
+    '-DMQTT_SERVER="mqtt.example.de"'
+    '-DMQTT_PORT=1883'
+    '-DMQTT_USER="Username"'
+    '-DMQTT_PASS="myMQTTPassword"'
+    '-DOTA_HASH="80e98f64761e74aae38bdea95f9ccefd"'
+upload_protocol = espota
+upload_port = 192.168.1.222
+upload_flags = 
+    --port=3232
+    --auth=OTAAccessESP32
+lib_deps = 
+    physee/SimpleTime@^1.0
+    uberi/CommandParser@^1.1.0
+    knolleary/PubSubClient@^2.8
+    
+extra_scripts = 
+    pre:version_increment/version_increment_pre.py   
+    post:version_increment/version_increment_post.py
