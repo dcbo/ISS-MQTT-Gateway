@@ -6,15 +6,7 @@ Receive data from Davis Vantage Vue ISS - Weather Station and publish Measuremen
   * Hope RFM69 Module @ 868MHz
 
 ## Wireing
-| ESP 32 Pin |  Dir   | RWM69 Pin | Signal |
-|  3.3V      |  --->   |   3.3V   | RFM69 Power-Supply |
-|   GND      |  <-->   |   GND    | Ground | 
-|   D23      |  --->   |   MOSI   | SPI-Master Out Slave In | 
-|   D19      |  <---   |   MISO   | SPI-Master In Slave Out | 
-|   D18      |  --->   |   SCK    | SPI-Clock |
-|    D2      |  <---   |   DIO0   | Receive Interrupt |
-|    D5      |  --->   |   NSS    | Chip Select | 
-|            |         |   ANA     | Antenna 8,6cm (Lambda/4 Dipole) |
+![Schematic](/doc/schematic.png)
 
 ## Power Supply
   * ESP 32 via USB
