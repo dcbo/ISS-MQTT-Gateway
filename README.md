@@ -66,10 +66,8 @@ Receive data from Davis Vantage Vue ISS - Weather Station and publish Measuremen
  * command: `cmd_setrc 42` 
  * response: `Raincounter set to 42` :
 
-## System related Commands
+## Reboot the ESP32
 ### `reset`
-Reboot ESP32
-
 Example:
  * command: `reset` 
  

@@ -463,7 +463,6 @@ void mqttPub(String subtopic, String msg, boolean mqttOnly){
 /************************************************************
  * cronjob
  * - execute things periodicaly
- * 
  ************************************************************/ 
 void cronjob(void) {
   // once on Startup
@@ -536,9 +535,279 @@ void oncePerMinute(void) {
   static uint8_t fidx = 4;
   byte t;
   // Insert here Actions, which should occure every 10 Seconds
-  sendSketchState(true);
-  sendRFMState(true);  
+  sendSketchState(true);  
 }
+
+
+/************************************************************
+ * Process the received RFM Data Packet
+ * - Parse Databytes and store to g_ Variables
+ * - 
+ ************************************************************/ 
+void parseIssData() {
+  uint16_t rawrr;
+  float cph; 
+  byte msgID;
+  uint16_t rainDiff;
+  
+  // *********************
+  // wind speed (all packets)          
+  g_windSpeed = (float) radio.DATA[1] * 1.60934;  
+  DBG_ISS.print("WindSpeed");
+  DBG_ISS.println(g_windSpeed);  
+  // *********************
+  // wind direction (all packets)
+  // There is a dead zone on the wind vane. No values are reported between 8
+  // and 352 degrees inclusive. These values correspond to received byte
+  // values of 1 and 255 respectively
+  // See http://www.wxforum.net/index.php?topic=21967.50    
+  // 0 = South    
+  g_windDirection = (uint16_t)(radio.DATA[2] * 360.0f / 255.0f);
+  // convert to 180° = South
+  if (g_windDirection >= 180) {
+      g_windDirection -= 180;
+  } else {
+      g_windDirection += 180;
+  }  
+  DBG_ISS.print("WindDirection: ");
+  DBG_ISS.println(g_windDirection);      
+  // *********************
+  // battery status (all packets)    
+  g_transmitterBatteryStatus = (boolean)(radio.DATA[0] & 0x8) == 0x8;
+  DBG_ISS.print(F("Battery status: "));
+  if (g_transmitterBatteryStatus) {
+      DBG_ISS.print(F("ALARM "));
+  } else {
+      DBG_ISS.print(F("OK    "));
+  }  
+  // Now look at each individual packet. Mask off the four low order bits. 
+  // The highest order bit of these four bits is set high when the ISS battery is low. 
+  // The other three bits are the MessageID.  
+  msgID = (radio.DATA[0] & 0xf0) >>4 ;
+  switch (msgID) {
+    case 0x2:  // goldcap charge status (MSG-ID 2) 
+      g_goldcapChargeStatus = (float)((radio.DATA[3] << 2) + ((radio.DATA[4] & 0xC0) >> 6)) / 100;     
+      DBG_ISS.print("Goldcap Charge Status: ");
+      DBG_ISS.print(g_goldcapChargeStatus);
+      DBG_ISS.println(" [V]");      
+      break;
+    case 0x3:  // MSG ID 3: unknown - not used
+      DBG_ISS.println("Message-ID 3: unknown");
+      break;
+    case 0x5:  // rain rate (MSG-ID 5) as number of rain clicks per hour
+               // ISS will transmit difference between last two clicks in seconds      
+      DBG_ISS.print("Rain Rate ");
+      if ( radio.DATA[3] == 255 ){
+          // no rain
+          g_rainRate = 0;
+          DBG_ISS.print("(NO rain): ");
+      } else {
+        rawrr = radio.DATA[3] + ((radio.DATA[4] & 0x30) * 16);
+        if ( (radio.DATA[4] & 0x40) == 0 ) {
+          // HiGH rain rate 
+          // Clicks per hour = 3600 / (VALUE/16)
+          cph = 57600 / (float) (rawrr);
+          DBG_ISS.print("(HIGH rain rate): ");
+        } else {
+          // LOW rain rate
+          // Clicks per hour = 3600 / VALUE
+          cph = 3600 / (float) (rawrr);
+          DBG_ISS.print("(LOW rain rate): ");
+        }
+        // Rainrate [mm/h] = [Clicks/hour] * [Cupsize]
+        g_rainRate = cph * 0.2;
+      }        
+      DBG_ISS.print(g_rainRate);              
+      DBG_ISS.println(" [mm/h]");
+      break;
+    case 0x7:  // solarRadiation (MSG-ID 7)
+      g_solarRadiation = (float)((radio.DATA[3] * 4) + ((radio.DATA[4] & 0xC0) >> 6));
+      DBG_ISS.print("Solar Radiation: ");
+      DBG_ISS.println(g_solarRadiation);      
+      break;
+    case 0x8:  // outside temperature (MSG-ID 8)
+      g_outsideTemperature = (float) (((radio.DATA[3] * 256 + radio.DATA[4]) / 160) -32) * 5 / 9;  
+      DBG_ISS.print("Outside Temp: ");
+      DBG_ISS.print(g_outsideTemperature);
+      DBG_ISS.println(" [C]");      
+      break;
+    case 0x9:  // gust speed (MSG-ID 9), maximum wind speed in last 10 minutes - not used
+      g_gustSpeed = (float) radio.DATA[3] * 1.60934;
+      DBG_ISS.print("Gust Speed: ");
+      DBG_ISS.print(g_gustSpeed);
+      DBG_ISS.println(" [km/h]");
+      break;
+    case 0xa:  // outside humidity (MSG-ID A)      
+      g_outsideHumidity = (float)(word((radio.DATA[4] >> 4), radio.DATA[3])) / 10.0;   
+      DBG_ISS.print("Outside Humdity: ");
+      DBG_ISS.print(g_outsideHumidity);
+      DBG_ISS.println(" [%relH]");
+      break;
+    case 0xe:  // rain counter (MSG-ID E)      
+      g_rainClicks = (radio.DATA[3] & 0x7F);              
+      rainDiff = 0;      
+      // First run
+      if (g_rainClicksLast == 255) {
+        g_rainClicksLast = g_rainClicks;
+      }      
+      if (g_rainClicks > g_rainClicksLast) {               
+        // Rainclicks higher than last time 
+        rainDiff = g_rainClicks - g_rainClicksLast;        
+      } else if (g_rainClicksLast > g_rainClicks) {        
+        // Rainclicks lower than last time (overflow) 
+        rainDiff = g_rainClicks + 128 - g_rainClicksLast;
+      } 
+      g_rainClicksLast = g_rainClicks;
+      g_rainClicksDay += rainDiff;
+      g_rainClicksSum += rainDiff;
+      DBG_ISS.print("Rain Counter: ");
+      DBG_ISS.print(g_rainClicks);
+      DBG_ISS.println(" [clicks]");        
+      DBG_ISS.print("Rain Counter Diff: ");
+      DBG_ISS.print(rainDiff);
+      DBG_ISS.println(" [clicks]");        
+      DBG_ISS.print("Dayly Rain Clicks: ");
+      DBG_ISS.print(g_rainClicksDay);
+      DBG_ISS.println(" [clicks]");        
+      DBG_ISS.print("Overall Rain Clicks: ");
+      DBG_ISS.print(g_rainClicksSum);
+      DBG_ISS.println(" [clicks]");              
+      break;      
+  }  
+  DBG_ISS.println("*** Finished Parsing ISS Data *** ");
+}
+
+
+/************************************************************
+ * Poll Radio
+ * - Check for received Packet
+ * - Hop
+ *   - After correct Packet has been received
+ *   - every 2.5s for 25 times after last correct Packet
+ *   - every 20s if no correct Packet has been received for a long time 
+ ************************************************************/ 
+void pollRadio(void) {
+  String msgStr;
+  // *************************
+  // * RF-Packet received
+  // * - check CRC
+  // * - process values if CRC OK
+  uint16_t crc; // CRC16 XModem Value
+  if (radio.receiveDone()) {    
+    DBG_RFM.println("Packet received: ");    
+    msgStr = "{";    
+    // millis
+    msgStr.concat("\"Millis\":" + String(millis()));
+    // Channel
+    DBG_RFM.print("Channel: ");
+    DBG_RFM.println(radio.CHANNEL);
+    msgStr.concat(", \"Channel\":" + String(radio.CHANNEL));
+    // 8 Data-Byte
+    msgStr.concat(", \"Data\":\"");
+    DBG_RFM.print("Data: ");
+    for (byte i = 0; i < DAVIS_PACKET_LEN; i++) {          
+      if (radio.DATA[i] < 10) {
+        msgStr.concat("0");
+        DBG_RFM.print("0");
+      }
+      msgStr.concat(String(radio.DATA[i], 16));    
+      DBG_RFM.print(radio.DATA[i], HEX);          
+      if (i < DAVIS_PACKET_LEN-1) {
+        msgStr.concat(":");
+        DBG_RFM.print(":");
+      }          
+    }
+    msgStr.concat("\"");        
+    DBG_RFM.println(" ");
+    // RSSI
+    DBG_RFM.print("RSSI: ");
+    DBG_RFM.println(radio.RSSI);
+    msgStr.concat(", \"RSSI\":" + String(radio.RSSI) + ",");
+    // Compute CRC
+    crc = radio.crc16_ccitt(radio.DATA, 6);   // crc = crc & 0xffff;
+    DBG_RFM.print("CRC: ");
+    DBG_RFM.println(crc, HEX);                
+    msgStr.concat(", \"CRC\":\"");
+    msgStr.concat(String(crc, 16));
+    msgStr.concat("\",");
+    // verify CRC    
+    if ((crc == (word(radio.DATA[6], radio.DATA[7]))) && (crc != 0)) {
+      g_lastRxTime = millis();
+      g_packetsReceived++;
+      // Hop to next Channel if CRC was correct
+      DBG_RFM.println("CRC OK");
+      DBG_RFM.print("Hop! - New Channel: ");
+      msgStr.concat(", \"CRC\":\"OK\"");
+      radio.hop();    
+      DBG_RFM.println(radio.CHANNEL);
+      g_hopCount = 1;
+      g_receivedStreak++;
+      if (g_receivedStreak > g_receivedStreakMax) {
+        g_receivedStreakMax = g_receivedStreak;
+      }
+      // Parse the RFM Data
+      parseIssData();
+      sendIssMqtt();
+    } else {            
+      DBG_RFM.println("Wrong CRC");        
+      msgStr.concat(", \"CRC\":\"ERROR\"");    
+      g_crcErrors++;
+      g_receivedStreak = 0;
+    }
+    // Finish MQTT Message
+    msgStr.concat("}");
+  }
+  // *************************
+  // Hop if packet was not received in expected time.
+  // Auto-Hopping machanism:
+  // - If a packet as been correctly received (g_hopCount == 1)
+  //   - hop every 2,5s 
+  //   - for maximum of 25 packets missing
+  // Timing:
+  // - Hop after (N * PACKET_INTERVAL) + PACKET_OFFSET  [N = number off Packets missed so far]
+  //   - 1st Hop after 3,0 s
+  //   - 2nd Hop after 5,5 s
+  //   - 3rd Hop after 8,0 s  
+  if ((g_hopCount > 0) && ((millis() - g_lastRxTime) > (unsigned long)(g_hopCount * PACKET_INTERVAL + PACKET_OFFSET))) {    
+    g_receivedStreak = 0;
+    // 1st missed Packet: Increment Resync-Counter
+    if (g_hopCount == 1) {
+      g_numResyncs++;
+    }
+    // after 25 missed Packets, no automatic HOP every 2,5s
+    if (++g_hopCount > 25) {
+      g_hopCount = 0;
+    }
+    g_autoHops++;
+    radio.hop();
+    DBG_RFM.print("HOP: ");
+    DBG_RFM.print(g_hopCount - 1);
+    DBG_RFM.println(" PACKET(S) MISSED");    
+    // MQTT Message
+    msgStr = "HOP: ";
+    msgStr.concat(String(g_hopCount - 1));
+    msgStr.concat(" Packets(s) missed, hopping anyway to Channel:");
+    msgStr.concat(String(radio.CHANNEL));    
+  }
+  // *************************
+  // Hop if NO packet was not received for a LONG time.
+  // Auto-Hopping machanism:
+  // Hop every PACKET_LONGINTERVAL 
+  // - if no Packet was received at all
+  // - OR if more than 25 Packets were missing
+  if ( (g_hopCount == 0) && ( (millis() - g_lastTimeout) > PACKET_LONGHOP) ) {
+    g_lastTimeout = millis();    
+    radio.hop();    
+    DBG_RFM.println(F("HOP: RESYNC (20s)"));
+    msgStr = "HOP: RESYNC, new Channel:";
+    msgStr.concat(String(radio.CHANNEL));
+  }
+  // Publish MQTT Message    
+  #if DEBUG_RFM
+  mqttPub(T_LOG, msgStr, true);  
+  #endif
+}
+
 
 /************************************************************
  * Reset Handler
@@ -584,6 +853,135 @@ void sendCPUState(boolean mqttOnly) {
 }
 
 
+ 
+/* ###################################################
+ * # Send Received Packet to MQTT over Software Serial
+ * ###################################################
+ * sends Data to ESP via Softwareserial
+ * Format Template:
+ * - {"WindSpeed": 31.415,
+ *    "WindDirection" : 314,
+ *    "BattWarning": 1,              
+ *    "Payload" : 80;00;B2;30;A9;00;AA;DA;    
+ *    "Channel": 4,
+ *    "RSSI" : -58,
+ *    "GoldcapVoltage" : 3.1415,     // when msgID = 0x2
+ *    "Rainrate" : 31.415,           // when msgID = 0x5
+ *    "SolarRadiation" : 3141,       // when msgID = 0x7
+ *    "OutsideTemperature":31.4,     // when msgID = 0x8
+ *    "GustSpeed" : 314.15,          // when msgID = 0x9
+ *    "OutsideHumidity" : 31,        // when msgID = 0xA
+ *    "RainClicks": 314,             // when msgID = 0xE
+ *    "packetsReceived":169,
+ *    "autoHops":152",
+ *    "numResyncs":42",   
+ *    "receivedStreak":23,     
+ *    "receivedStreakMax":2423,
+ *    "crcerrors":12" 
+ **************************************************************************/
+void sendIssMqtt(void) {    
+    String msgStr;
+    uint8_t msgID;       
+    // {"WindSpeed": 31.415,
+    msgStr = "{\"WindSpeed\": ";
+    msgStr.concat(g_windSpeed);
+    // "WindDirection" : 314,
+    msgStr.concat(", \"WindDirection\": ");
+    msgStr.concat(g_windDirection);
+    // "BattWarning": 1,              
+    msgStr.concat(", \"BattWarning\": ");
+    if (g_transmitterBatteryStatus){
+      msgStr.concat("1");
+    } else {
+      msgStr.concat("0");  
+    }    
+    // "Payload" : 80;00;B2;30;A9;00;AA;DA;    
+    msgStr.concat(", \"Payload\": \"");
+    for (byte i = 0; i < DAVIS_PACKET_LEN; i++) {
+        if (radio.DATA[i] < 0x10) {
+            msgStr.concat(F("0"));
+        }
+        msgStr.concat(String(radio.DATA[i], HEX));
+        if (i < DAVIS_PACKET_LEN -1 ) {
+          msgStr.concat(":");
+        } else {
+          msgStr.concat("\"");
+        }        
+    }
+    // "Channel": 4,
+    msgStr.concat(", \"Channel\":");
+    msgStr.concat(radio.CHANNEL);            
+    // "RSSI" : -58}
+    msgStr.concat(", \"RSSI\":");
+    msgStr.concat(radio.RSSI);   
+    // get msgID
+    msgID = (radio.DATA[0] & 0xf0) >>4 ;                
+    // "msgID" : 1}
+    msgStr.concat(", \"msgID\":");
+    msgStr.concat(msgID);
+    msgStr.concat(", ");    
+    switch (msgID) {
+        case 0x2: // "GoldcapVoltage" : 3.1415,     
+            msgStr.concat("\"GoldcapVoltage\":");
+            msgStr.concat(g_goldcapChargeStatus);
+            break;
+        case 0x3: // Unknown value, insert Pressure instead
+            #if HAS_BMP085 
+                myString.concat(F("\"Pressure\" : "));
+                myString.concat(g_pressPa);             
+                myString.concat(F(", \"PressureAtSealevel\" : "));
+                myString.concat(g_pressPaSea);
+                myString.concat(F(", \"InsideTemperature\" : "));
+                myString.concat(g_insideTemperature);
+            #else
+                msgStr.concat("\"Unknown msgID\":3");
+            #endif // HAS_BMP085 
+            break;
+        case 0x5: // "Rainrate" : 31.415,           
+            msgStr.concat("\"Rainrate\":");
+            msgStr.concat(g_rainRate);
+            break;
+        case 0x7: // "SolarRadiation" : 3141,       
+            msgStr.concat("\"SolarRadiation\":");
+            msgStr.concat(g_solarRadiation);
+            break;
+        case 0x8: // "OutsideTemperature":31.4,     
+            msgStr.concat("\"OutsideTemperature\":");
+            msgStr.concat(g_outsideTemperature);
+            break;
+        case 0x9: // "GustSpeed" : 314.15,          
+            msgStr.concat("\"GustSpeed\":");
+            msgStr.concat(g_gustSpeed);
+            break;
+        case 0xa: // "OutsideHumidity" : 31,        
+            msgStr.concat("\"OutsideHumidity\":");
+            msgStr.concat(g_outsideHumidity);
+            break;
+        case 0xe: // "RainClicks": 314,             
+            msgStr.concat("\"RainClicks\":");
+            msgStr.concat(g_rainClicks);
+            msgStr.concat(", \"RainClicksDay\":");
+            msgStr.concat(g_rainClicksDay);
+            msgStr.concat(", \"RainClicksSum\":");                        
+            msgStr.concat(g_rainClicksSum);
+            break;
+    }         
+    // Statistics
+    msgStr.concat(",");
+    msgStr.concat("\"millis\":" + String(millis()) + ",");
+    msgStr.concat("\"lastpacketreceived\":" + String(g_lastRxTime) + ",");
+    msgStr.concat("\"packetsReceived\":" + String(g_packetsReceived) + ",");
+    msgStr.concat("\"autoHops\":" + String(g_autoHops) + ",");     
+    msgStr.concat("\"numResyncs\":" + String(g_numResyncs) + ",");     
+    msgStr.concat("\"receivedStreak\":" + String(g_receivedStreak) + ",");
+    msgStr.concat("\"receivedStreakMax\":" + String(g_receivedStreakMax) + ",");       
+    msgStr.concat("\"crcerrors\":" + String(g_crcErrors));     
+    msgStr.concat("}");    
+    // Publish MQTT
+    mqttPub(T_ISS, msgStr, true);      
+}
+
+
 /************************************************************
  * Send Network State
  * this will send State of Network  as JSON Message:
@@ -602,37 +1000,6 @@ void sendNetworkState(boolean mqttOnly) {
   msgStr.concat("\"MQTT-ClientID\":\"" + composeClientID() + "\"");     
   msgStr.concat("}");    
   mqttPub(T_NETWORK, msgStr, mqttOnly);
-}
-
-
-/************************************************************
- * Send RFM Stateistics
- * this will send Statistic of RFM Receiver
- ************************************************************
- * {"packetsReceived":169,
- *  "autoHops":152",
- *  "numResyncs":42",   
- *  "receivedStreak":23,     
- *  "receivedStreakMax":2423,
- *  "crcerrors":12" 
- * }
- ************************************************************
- * @param[in] mqttOnly if false, then also Serial Output is generated
- ************************************************************/ 
-void sendRFMState(boolean mqttOnly) {    
-  String msgStr;    
-  // Publish MQTT
-  msgStr = '{';  
-  msgStr.concat("\"millis\":" + String(millis()) + ",");
-  msgStr.concat("\"lastpacketreceived\":" + String(g_lastRxTime) + ",");
-  msgStr.concat("\"packetsReceived\":" + String(g_packetsReceived) + ",");
-  msgStr.concat("\"autoHops\":" + String(g_autoHops) + ",");     
-  msgStr.concat("\"numResyncs\":" + String(g_numResyncs) + ",");     
-  msgStr.concat("\"receivedStreak\":" + String(g_receivedStreak) + ",");
-  msgStr.concat("\"receivedStreakMax\":" + String(g_receivedStreakMax) + ",");       
-  msgStr.concat("\"crcerrors\":" + String(g_crcErrors));     
-  msgStr.concat("}");    
-  mqttPub(T_RFMSTATS, msgStr, mqttOnly);
 }
 
 
@@ -831,6 +1198,19 @@ void setupOTA(void) {
 
 
 /************************************************************
+ * Setup Radio
+ * - Init RFM69 to receive
+ * - Set Channel 0
+ ************************************************************/ 
+void setupRadio(void) {
+  DBG.print(F("init radio..."));
+  radio.initialize();
+  radio.setChannel(0);              // Select Channel 0 
+  DBG.println(F("done"));
+}
+
+
+/************************************************************
  * Init Wifi 
  * - SSID: WIFI_SSID 
  * - PSK:  WIFI_PSK
@@ -938,402 +1318,7 @@ void loop(void) {
   pollRadio();
 }
 
-// Initialize setupRadio
-void setupRadio(void) {
-  DBG.print(F("init radio..."));
-  radio.initialize();
-  radio.setChannel(0);              // Select Channel 0 
-  DBG.println(F("done"));
-}
 
 
-/************************************************************
- * Poll Radio
- * - Check for received Packet
- * - Hop
- *   - After correct Packet has been received
- *   - every 2.5s for 25 times after last correct Packet
- *   - every 20s if no correct Packet has been received for a long time 
- ************************************************************/ 
-void pollRadio(void) {
-  String msgStr;
-  // *************************
-  // * RF-Packet received
-  // * - check CRC
-  // * - process values if CRC OK
-  uint16_t crc; // CRC16 XModem Value
-  if (radio.receiveDone()) {    
-    DBG_RFM.println("Packet received: ");    
-    msgStr = "{";    
-    // millis
-    msgStr.concat("\"Millis\":" + String(millis()));
-    // Channel
-    DBG_RFM.print("Channel: ");
-    DBG_RFM.println(radio.CHANNEL);
-    msgStr.concat(", \"Channel\":" + String(radio.CHANNEL));
-    // 8 Data-Byte
-    msgStr.concat(", \"Data\":\"");
-    DBG_RFM.print("Data: ");
-    for (byte i = 0; i < DAVIS_PACKET_LEN; i++) {          
-      if (radio.DATA[i] < 10) {
-        msgStr.concat("0");
-        DBG_RFM.print("0");
-      }
-      msgStr.concat(String(radio.DATA[i], 16));    
-      DBG_RFM.print(radio.DATA[i], HEX);          
-      if (i < DAVIS_PACKET_LEN-1) {
-        msgStr.concat(":");
-        DBG_RFM.print(":");
-      }          
-    }
-    msgStr.concat("\"");        
-    DBG_RFM.println(" ");
-    // RSSI
-    DBG_RFM.print("RSSI: ");
-    DBG_RFM.println(radio.RSSI);
-    msgStr.concat(", \"RSSI\":" + String(radio.RSSI) + ",");
-    // Compute CRC
-    crc = radio.crc16_ccitt(radio.DATA, 6);   // crc = crc & 0xffff;
-    DBG_RFM.print("CRC: ");
-    DBG_RFM.println(crc, HEX);                
-    msgStr.concat(", \"CRC\":\"");
-    msgStr.concat(String(crc, 16));
-    msgStr.concat("\",");
-    // verify CRC    
-    if ((crc == (word(radio.DATA[6], radio.DATA[7]))) && (crc != 0)) {
-      g_lastRxTime = millis();
-      g_packetsReceived++;
-      // Hop to next Channel if CRC was correct
-      DBG_RFM.println("CRC OK");
-      DBG_RFM.print("Hop! - New Channel: ");
-      msgStr.concat(", \"CRC\":\"OK\"");
-      radio.hop();    
-      DBG_RFM.println(radio.CHANNEL);
-      g_hopCount = 1;
-      g_receivedStreak++;
-      if (g_receivedStreak > g_receivedStreakMax) {
-        g_receivedStreakMax = g_receivedStreak;
-      }
-      // Parse the RFM Data
-      parseIssData();
-      sendIssMqtt();
-    } else {            
-      DBG_RFM.println("Wrong CRC");        
-      msgStr.concat(", \"CRC\":\"ERROR\"");    
-      g_crcErrors++;
-      g_receivedStreak = 0;
-    }
-    // Finish MQTT Message
-    msgStr.concat("}");
-  }
 
-  // *************************
-  // Hop if packet was not received in expected time.
-  // Auto-Hopping machanism:
-  // - If a packet as been correctly received (g_hopCount == 1)
-  //   - hop every 2,5s 
-  //   - for maximum of 25 packets missing
-  // Timing:
-  // - Hop after (N * PACKET_INTERVAL) + PACKET_OFFSET  [N = number off Packets missed so far]
-  //   - 1st Hop after 3,0 s
-  //   - 2nd Hop after 5,5 s
-  //   - 3rd Hop after 8,0 s  
-  if ((g_hopCount > 0) && ((millis() - g_lastRxTime) > (unsigned long)(g_hopCount * PACKET_INTERVAL + PACKET_OFFSET))) {    
-    g_receivedStreak = 0;
-    // 1st missed Packet: Increment Resync-Counter
-    if (g_hopCount == 1) {
-      g_numResyncs++;
-    }
-    // after 25 missed Packets, no automatic HOP every 2,5s
-    if (++g_hopCount > 25) {
-      g_hopCount = 0;
-    }
-    g_autoHops++;
-    radio.hop();
-    DBG_RFM.print("HOP: ");
-    DBG_RFM.print(g_hopCount - 1);
-    DBG_RFM.println(" PACKET(S) MISSED");    
-    // MQTT Message
-    msgStr = "HOP: ";
-    msgStr.concat(String(g_hopCount - 1));
-    msgStr.concat(" Packets(s) missed, hopping anyway to Channel:");
-    msgStr.concat(String(radio.CHANNEL));    
-  }
-
-  // *************************
-  // Hop if NO packet was not received for a LONG time.
-  // Auto-Hopping machanism:
-  // Hop every PACKET_LONGINTERVAL 
-  // - if no Packet was received at all
-  // - OR if more than 25 Packets were missing
-  if ( (g_hopCount == 0) && ( (millis() - g_lastTimeout) > PACKET_LONGHOP) ) {
-    g_lastTimeout = millis();    
-    radio.hop();    
-    DBG_RFM.println(F("HOP: RESYNC (20s)"));
-    msgStr = "HOP: RESYNC, new Channel:";
-    msgStr.concat(String(radio.CHANNEL));
-  }
-  // Publish MQTT Message    
-  #if DEBUG_RFM
-  mqttPub(T_LOG, msgStr, true);  
-  #endif
-}
-
-/************************************************************
- * Process the received RFM Data Packet
- * - 
- * - 
- ************************************************************/ 
-void parseIssData() {
-  uint16_t rawrr;
-  float cph; 
-  byte msgID;
-  uint16_t rainDiff;
-
-  // *********************
-  // wind speed (all packets)          
-  g_windSpeed = (float) radio.DATA[1] * 1.60934;  
-  DBG_ISS.print("WindSpeed");
-  DBG_ISS.println(g_windSpeed);
-  
-  // *********************
-  // wind direction (all packets)
-  // There is a dead zone on the wind vane. No values are reported between 8
-  // and 352 degrees inclusive. These values correspond to received byte
-  // values of 1 and 255 respectively
-  // See http://www.wxforum.net/index.php?topic=21967.50    
-  // 0 = South    
-  g_windDirection = (uint16_t)(radio.DATA[2] * 360.0f / 255.0f);
-  // convert to 180° = South
-  if (g_windDirection >= 180) {
-      g_windDirection -= 180;
-  } else {
-      g_windDirection += 180;
-  }  
-  DBG_ISS.print("WindDirection: ");
-  DBG_ISS.println(g_windDirection);    
-  
-  // *********************
-  // battery status (all packets)    
-  g_transmitterBatteryStatus = (boolean)(radio.DATA[0] & 0x8) == 0x8;
-  DBG_ISS.print(F("Battery status: "));
-  if (g_transmitterBatteryStatus) {
-      DBG_ISS.print(F("ALARM "));
-  } else {
-      DBG_ISS.print(F("OK    "));
-  }
-  
-  // Now look at each individual packet. Mask off the four low order bits. 
-  // The highest order bit of these four bits is set high when the ISS battery is low. 
-  // The other three bits are the station ID.  
-  msgID = (radio.DATA[0] & 0xf0) >>4 ;
-  switch (msgID) {
-    case 0x2:  // goldcap charge status (MSG-ID 2) 
-      g_goldcapChargeStatus = (float)((radio.DATA[3] << 2) + ((radio.DATA[4] & 0xC0) >> 6)) / 100;     
-      DBG_ISS.print("Goldcap Charge Status: ");
-      DBG_ISS.print(g_goldcapChargeStatus);
-      DBG_ISS.println(" [V]");      
-      break;
-    case 0x3:  // MSG ID 3: unknown - not used
-      DBG_ISS.println("Message-ID 3: unknown");
-      break;
-    case 0x5:  // rain rate (MSG-ID 5) as number of rain clicks per hour
-               // ISS will transmit difference between last two clicks in seconds      
-      DBG_ISS.print("Rain Rate ");
-      if ( radio.DATA[3] == 255 ){
-          // no rain
-          g_rainRate = 0;
-          DBG_ISS.print("(NO rain): ");
-      } else {
-        rawrr = radio.DATA[3] + ((radio.DATA[4] & 0x30) * 16);
-        if ( (radio.DATA[4] & 0x40) == 0 ) {
-          // HiGH rain rate 
-          // Clicks per hour = 3600 / (VALUE/16)
-          cph = 57600 / (float) (rawrr);
-          DBG_ISS.print("(HIGH rain rate): ");
-        } else {
-          // LOW rain rate
-          // Clicks per hour = 3600 / VALUE
-          cph = 3600 / (float) (rawrr);
-          DBG_ISS.print("(LOW rain rate): ");
-        }
-        // Rainrate [mm/h] = [Clicks/hour] * [Cupsize]
-        g_rainRate = cph * 0.2;
-      }        
-      DBG_ISS.print(g_rainRate);              
-      DBG_ISS.println(" [mm/h]");
-      break;
-    case 0x7:  // solarRadiation (MSG-ID 7)
-      g_solarRadiation = (float)((radio.DATA[3] * 4) + ((radio.DATA[4] & 0xC0) >> 6));
-      DBG_ISS.print("Solar Radiation: ");
-      DBG_ISS.println(g_solarRadiation);      
-      break;
-    case 0x8:  // outside temperature (MSG-ID 8)
-      g_outsideTemperature = (float) (((radio.DATA[3] * 256 + radio.DATA[4]) / 160) -32) * 5 / 9;  
-      DBG_ISS.print("Outside Temp: ");
-      DBG_ISS.print(g_outsideTemperature);
-      DBG_ISS.println(" [C]");      
-      break;
-    case 0x9:  // gust speed (MSG-ID 9), maximum wind speed in last 10 minutes - not used
-      g_gustSpeed = (float) radio.DATA[3] * 1.60934;
-      DBG_ISS.print("Gust Speed: ");
-      DBG_ISS.print(g_gustSpeed);
-      DBG_ISS.println(" [km/h]");
-      break;
-    case 0xa:  // outside humidity (MSG-ID A)      
-      g_outsideHumidity = (float)(word((radio.DATA[4] >> 4), radio.DATA[3])) / 10.0;   
-      DBG_ISS.print("Outside Humdity: ");
-      DBG_ISS.print(g_outsideHumidity);
-      DBG_ISS.println(" [%relH]");
-      break;
-    case 0xe:  // rain counter (MSG-ID E)      
-      g_rainClicks = (radio.DATA[3] & 0x7F);              
-      rainDiff = 0;      
-      // First run
-      if (g_rainClicksLast == 255) {
-        g_rainClicksLast = g_rainClicks;
-      }      
-      if (g_rainClicks > g_rainClicksLast) {               
-        // Rainclicks higher than last time 
-        rainDiff = g_rainClicks - g_rainClicksLast;        
-      } else if (g_rainClicksLast > g_rainClicks) {        
-        // Rainclicks lower than last time (overflow) 
-        rainDiff = g_rainClicks + 128 - g_rainClicksLast;
-      } 
-      g_rainClicksLast = g_rainClicks;
-      g_rainClicksDay += rainDiff;
-      g_rainClicksSum += rainDiff;
-      DBG_ISS.print("Rain Counter: ");
-      DBG_ISS.print(g_rainClicks);
-      DBG_ISS.println(" [clicks]");        
-      DBG_ISS.print("Rain Counter Diff: ");
-      DBG_ISS.print(rainDiff);
-      DBG_ISS.println(" [clicks]");        
-      DBG_ISS.print("Dayly Rain Clicks: ");
-      DBG_ISS.print(g_rainClicksDay);
-      DBG_ISS.println(" [clicks]");        
-      DBG_ISS.print("Overall Rain Clicks: ");
-      DBG_ISS.print(g_rainClicksSum);
-      DBG_ISS.println(" [clicks]");              
-      break;      
-  }  
-  DBG_ISS.println("*** Finished Parsing ISS Data *** ");
-}
-  
-// ###################################################
-// # Send Received Packet to MQTT over Software Serial
-// ###################################################
-// sends Data to ESP via Softwareserial
-// Format Template:
-// - {"WindSpeed": 31.415,
-//    "WindDirection" : 314,
-//    "BattWarning": 1,              
-//    "Payload" : 80;00;B2;30;A9;00;AA;DA;    
-//    "Channel": 4,
-//    "RSSI" : -58,
-//    "GoldcapVoltage" : 3.1415,     // when msgID = 0x2
-//    "Rainrate" : 31.415,           // when msgID = 0x5
-//    "SolarRadiation" : 3141,       // when msgID = 0x7
-//    "OutsideTemperature":31.4,     // when msgID = 0x8
-//    "GustSpeed" : 314.15,          // when msgID = 0x9
-//    "OutsideHumidity" : 31,        // when msgID = 0xA
-//    "RainClicks": 314,             // when msgID = 0xE
-//   }
-void sendIssMqtt(void) {    
-    String msgStr;
-    uint8_t msgID;   
-    
-    // {"WindSpeed": 31.415,
-    msgStr = "{\"WindSpeed\": ";
-    msgStr.concat(g_windSpeed);
-
-    // "WindDirection" : 314,
-    msgStr.concat(", \"WindDirection\": ");
-    msgStr.concat(g_windDirection);
-
-    // "BattWarning": 1,              
-    msgStr.concat(", \"BattWarning\": ");
-    if (g_transmitterBatteryStatus){
-      msgStr.concat("1");
-    } else {
-      msgStr.concat("0");  
-    }
-    
-    // "Payload" : 80;00;B2;30;A9;00;AA;DA;    
-    msgStr.concat(", \"Payload\": \"");
-    for (byte i = 0; i < DAVIS_PACKET_LEN; i++) {
-        if (radio.DATA[i] < 0x10) {
-            msgStr.concat(F("0"));
-        }
-        msgStr.concat(String(radio.DATA[i], HEX));
-        if (i < DAVIS_PACKET_LEN -1 ) {
-          msgStr.concat(":");
-        } else {
-          msgStr.concat("\"");
-        }        
-    }
-
-    // "Channel": 4,
-    msgStr.concat(", \"Channel\":");
-    msgStr.concat(radio.CHANNEL);
-            
-    // "RSSI" : -58}
-    msgStr.concat(", \"RSSI\":");
-    msgStr.concat(radio.RSSI);    
-        
-    msgID = (radio.DATA[0] & 0xf0) >>4 ;                
-    // "msgID" : 1}
-    msgStr.concat(", \"msgID\":");
-    msgStr.concat(msgID);
-    msgStr.concat(", ");    
-    switch (msgID) {
-        case 0x2: // "GoldcapVoltage" : 3.1415,     
-            msgStr.concat("\"GoldcapVoltage\":");
-            msgStr.concat(g_goldcapChargeStatus);
-            break;
-        case 0x3: // Unknown value, insert Pressure instead
-            #if HAS_BMP085 
-                myString.concat(F("\"Pressure\" : "));
-                myString.concat(g_pressPa);             
-                myString.concat(F(", \"PressureAtSealevel\" : "));
-                myString.concat(g_pressPaSea);
-                myString.concat(F(", \"InsideTemperature\" : "));
-                myString.concat(g_insideTemperature);
-            #else
-                msgStr.concat("\"Unknown msgID\":3");
-            #endif // HAS_BMP085 
-            break;
-        case 0x5: // "Rainrate" : 31.415,           
-            msgStr.concat("\"Rainrate\":");
-            msgStr.concat(g_rainRate);
-            break;
-        case 0x7: // "SolarRadiation" : 3141,       
-            msgStr.concat("\"SolarRadiation\":");
-            msgStr.concat(g_solarRadiation);
-            break;
-        case 0x8: // "OutsideTemperature":31.4,     
-            msgStr.concat("\"OutsideTemperature\":");
-            msgStr.concat(g_outsideTemperature);
-            break;
-        case 0x9: // "GustSpeed" : 314.15,          
-            msgStr.concat("\"GustSpeed\":");
-            msgStr.concat(g_gustSpeed);
-            break;
-        case 0xa: // "OutsideHumidity" : 31,        
-            msgStr.concat("\"OutsideHumidity\":");
-            msgStr.concat(g_outsideHumidity);
-            break;
-        case 0xe: // "RainClicks": 314,             
-            msgStr.concat("\"RainClicks\":");
-            msgStr.concat(g_rainClicks);
-            msgStr.concat(", \"RainClicksDay\":");
-            msgStr.concat(g_rainClicksDay);
-            msgStr.concat(", \"RainClicksSum\":");                        
-            msgStr.concat(g_rainClicksSum);
-            break;
-    }    
-    msgStr.concat ("}");        
-    mqttPub(T_ISS, msgStr, true);      
-}
-
-
+ 
