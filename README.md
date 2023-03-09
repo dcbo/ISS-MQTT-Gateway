@@ -30,7 +30,7 @@ Receive data from Davis Vantage Vue ISS - Weather Station and publish Measuremen
     * "WindSpeed": 3.22,  
     * "WindDirection": 257,
     * "BattWarning": 0, 
-    * "Payload": "80:02:37:1b:ab:0d:4e:dc", 
+    * "Payload": "80:02:e1:1e:1b:05:b5:b3", 
     * "Channel":1, 
     * "RSSI":-74,
     * "msgID":8,
