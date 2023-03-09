@@ -36,7 +36,7 @@ Receive data from Davis Vantage Vue ISS - Weather Station and publish Measuremen
     * "RSSI":-74,
     * "msgID":8,
     * "OutsideTemperature":6.67
-  * Each Packet from the Davis ISS contains only one additional Measurment.  
+  * Each Packet from the Davis ISS contains only one additional Measurment.    
 # Core-System-Functionality
 * Wifi Connection  
 * MQTT Connection 
@@ -46,11 +46,8 @@ Receive data from Davis Vantage Vue ISS - Weather Station and publish Measuremen
 * CRON System which sends different MQTT Topics every 10s, 30s and 60s
 * Automatic Versioning System
   * Version Number is incremented after Upload to Production Target
-# Device Specific-Functionality
-* Write Text on Display
-* Scroll Text when Display is full
-* Print text received via MQTT on Display
-
+# Example JSON-Data
+![Example JSON-Data](/doc/jsondata.png)
 # Available MQTT-Commands 
 * Commands must be published to topic `[PREFIX]/cmd`
 * Responses are published to `[PREFIX]/result`
