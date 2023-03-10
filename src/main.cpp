@@ -167,7 +167,7 @@ void cmd_reboot  (MyCommandParser::Argument *args, char *response);      // "reb
 void cmd_setrc   (MyCommandParser::Argument *args, char *response);      // "setrc", "u"
 
 // DavisRFM69 radio;            
-DavisRFM69  radio(RFM_CS, RFM_IRQ, RFM_HW);                               
+DavisRFM69  radio(RFM_CS, RFM_IRQ);                               
 
 
 /************************************************************
@@ -604,7 +604,7 @@ void parseIssData() {
   
   // *********************
   // wind speed (all packets)          
-  g_windSpeed = (float) radio.DATA[1] * 1.60934;  
+  g_windSpeed = (float) radio.data(1) * 1.60934;  
   DBG_ISS.print("WindSpeed");
   DBG_ISS.println(g_windSpeed);  
   // *********************
@@ -614,7 +614,7 @@ void parseIssData() {
   // values of 1 and 255 respectively
   // See http://www.wxforum.net/index.php?topic=21967.50    
   // 0 = South    
-  g_windDirection = (uint16_t)(radio.DATA[2] * 360.0f / 255.0f);
+  g_windDirection = (uint16_t)(radio.data(2) * 360.0f / 255.0f);
   // convert to 180° = South
   if (g_windDirection >= 180) {
       g_windDirection -= 180;
@@ -625,7 +625,7 @@ void parseIssData() {
   DBG_ISS.println(g_windDirection);      
   // *********************
   // battery status (all packets)    
-  g_transmitterBatteryStatus = (boolean)(radio.DATA[0] & 0x8) == 0x8;
+  g_transmitterBatteryStatus = (boolean)(radio.data(0) & 0x8) == 0x8;
   DBG_ISS.print(F("Battery status: "));
   if (g_transmitterBatteryStatus) {
       DBG_ISS.print(F("ALARM "));
@@ -635,10 +635,10 @@ void parseIssData() {
   // Now look at each individual packet. Mask off the four low order bits. 
   // The highest order bit of these four bits is set high when the ISS battery is low. 
   // The other three bits are the MessageID.  
-  msgID = (radio.DATA[0] & 0xf0) >>4 ;
+  msgID = (radio.data(0) & 0xf0) >>4 ;
   switch (msgID) {
     case 0x2:  // goldcap charge status (MSG-ID 2) 
-      g_goldcapChargeStatus = (float)((radio.DATA[3] << 2) + ((radio.DATA[4] & 0xC0) >> 6)) / 100;     
+      g_goldcapChargeStatus = (float)((radio.data(3) << 2) + ((radio.data(4) & 0xC0) >> 6)) / 100;     
       DBG_ISS.print("Goldcap Charge Status: ");
       DBG_ISS.print(g_goldcapChargeStatus);
       DBG_ISS.println(" [V]");      
@@ -649,13 +649,13 @@ void parseIssData() {
     case 0x5:  // rain rate (MSG-ID 5) as number of rain clicks per hour
                // ISS will transmit difference between last two clicks in seconds      
       DBG_ISS.print("Rain Rate ");
-      if ( radio.DATA[3] == 255 ){
+      if ( radio.data(3) == 255 ){
           // no rain
           g_rainRate = 0;
           DBG_ISS.print("(NO rain): ");
       } else {
-        rawrr = radio.DATA[3] + ((radio.DATA[4] & 0x30) * 16);
-        if ( (radio.DATA[4] & 0x40) == 0 ) {
+        rawrr = radio.data(3) + ((radio.data(4) & 0x30) * 16);
+        if ( (radio.data(4) & 0x40) == 0 ) {
           // HiGH rain rate 
           // Clicks per hour = 3600 / (VALUE/16)
           cph = 57600 / (float) (rawrr);
@@ -673,30 +673,30 @@ void parseIssData() {
       DBG_ISS.println(" [mm/h]");
       break;
     case 0x7:  // solarRadiation (MSG-ID 7)
-      g_solarRadiation = (float)((radio.DATA[3] * 4) + ((radio.DATA[4] & 0xC0) >> 6));
+      g_solarRadiation = (float)((radio.data(3) * 4) + ((radio.data(4) & 0xC0) >> 6));
       DBG_ISS.print("Solar Radiation: ");
       DBG_ISS.println(g_solarRadiation);      
       break;
     case 0x8:  // outside temperature (MSG-ID 8)
-      g_outsideTemperature = (float) (((radio.DATA[3] * 256 + radio.DATA[4]) / 160) -32) * 5 / 9;  
+      g_outsideTemperature = (float) (((radio.data(3) * 256 + radio.data(4)) / 160) -32) * 5 / 9;  
       DBG_ISS.print("Outside Temp: ");
       DBG_ISS.print(g_outsideTemperature);
       DBG_ISS.println(" [C]");      
       break;
     case 0x9:  // gust speed (MSG-ID 9), maximum wind speed in last 10 minutes - not used
-      g_gustSpeed = (float) radio.DATA[3] * 1.60934;
+      g_gustSpeed = (float) radio.data(3) * 1.60934;
       DBG_ISS.print("Gust Speed: ");
       DBG_ISS.print(g_gustSpeed);
       DBG_ISS.println(" [km/h]");
       break;
     case 0xa:  // outside humidity (MSG-ID A)      
-      g_outsideHumidity = (float)(word((radio.DATA[4] >> 4), radio.DATA[3])) / 10.0;   
+      g_outsideHumidity = (float)(word((radio.data(4) >> 4), radio.data(3))) / 10.0;   
       DBG_ISS.print("Outside Humdity: ");
       DBG_ISS.print(g_outsideHumidity);
       DBG_ISS.println(" [%relH]");
       break;
     case 0xe:  // rain counter (MSG-ID E)      
-      g_rainClicks = (radio.DATA[3] & 0x7F);              
+      g_rainClicks = (radio.data(3) & 0x7F);              
       rainDiff = 0;      
       // First run
       if (g_rainClicksLast == 255) {
@@ -742,51 +742,49 @@ void pollRadio(void) {
   String msgStr;
   uint32_t now;
   uint8_t msgID;
+  uint16_t crc; 
+  boolean success; 
   // *************************
   // * RF-Packet received
   // * - check CRC
-  // * - process values if CRC OK
-  uint16_t crc; // CRC16 XModem Value
+  // * - process values if CRC OK  
+  success = false;
   if (radio.receiveDone()) {         
     now = millis();
     DBG_RFM.println("Packet received: ");    
-    msgStr = "{";    
-    // millis
-    msgStr.concat("\"Millis\":" + String(now));
+    msgStr = "Packet received:";    
     // Channel
     DBG_RFM.print("Channel: ");
-    DBG_RFM.println(radio.CHANNEL);
-    msgStr.concat(", \"Channel\":" + String(radio.CHANNEL));
+    DBG_RFM.println(radio.channel());
+    msgStr.concat("Ch:"+ String(radio.channel()));
     // 8 Data-Byte
-    msgStr.concat(", \"Data\":\"");
+    msgStr.concat(" Data:");
     DBG_RFM.print("Data: ");
     for (byte i = 0; i < DAVIS_PACKET_LEN; i++) {          
-      if (radio.DATA[i] < 10) {
+      if (radio.data(i) < 10) {
         msgStr.concat("0");
         DBG_RFM.print("0");
       }
-      msgStr.concat(String(radio.DATA[i], 16));    
-      DBG_RFM.print(radio.DATA[i], HEX);          
+      msgStr.concat(String(radio.data(i), 16));    
+      DBG_RFM.print(radio.data(i), HEX);          
       if (i < DAVIS_PACKET_LEN-1) {
         msgStr.concat(":");
         DBG_RFM.print(":");
       }          
-    }
-    msgStr.concat("\"");        
+    }    
     DBG_RFM.println(" ");
     // RSSI
     DBG_RFM.print("RSSI: ");
-    DBG_RFM.println(radio.RSSI);
-    msgStr.concat(", \"RSSI\":" + String(radio.RSSI) + ",");
+    DBG_RFM.println((radio.rssi()));
+    msgStr.concat(" RSSI:" + String(radio.rssi()));
     // Compute CRC
-    crc = radio.crc16_ccitt(radio.DATA, 6);   // crc = crc & 0xffff;
+    crc =  radio.crc16(); 
     DBG_RFM.print("CRC: ");
     DBG_RFM.println(crc, HEX);                
-    msgStr.concat(", \"CRC\":\"");
-    msgStr.concat(String(crc, 16));
-    msgStr.concat("\",");
+    msgStr.concat(" CRC:");
+    msgStr.concat(String(crc, 16));    
     // verify CRC    
-    if ((crc == (word(radio.DATA[6], radio.DATA[7]))) && (crc != 0)) {
+    if ((crc == (word(radio.data(6), radio.data(7)))) && (crc != 0)) {
       if ((g_lastRxTime - now) > g_longestBlackout) {
         g_longestBlackout = g_lastRxTime - now;
       }
@@ -796,9 +794,9 @@ void pollRadio(void) {
       // Hop to next Channel if CRC was correct
       DBG_RFM.println("CRC OK");
       DBG_RFM.print("Hop! - New Channel: ");
-      msgStr.concat(", \"CRC\":\"OK\"");
+      msgStr.concat(" - OK");
       radio.hop();    
-      DBG_RFM.println(radio.CHANNEL);
+      DBG_RFM.println(radio.channel());
       g_hopCount = 1;
       g_receivedStreak++;
       if (g_receivedStreak > g_receivedStreakMax) {
@@ -806,22 +804,15 @@ void pollRadio(void) {
       }
       // Parse the RFM Data
       parseIssData();
-      // Send Data for current Message ID      
-      msgID = (radio.DATA[0] & 0xf0) >> 4;
-      mqttPub("DEBUG", String(msgID), true);  
-      if (g_sendReceivedPackets) {
-        sendIssData(msgID); 
-      }      
+      success = true;      
     } else {            
       // don`t try  again on same channel      
-      radio._packetReceived = false;
+      radio.gotPacket();
       DBG_RFM.println("Wrong CRC");        
-      msgStr.concat(", \"CRC\":\"ERROR\"");    
+      msgStr.concat(" - ERROR");    
       g_crcErrors++;
       g_receivedStreak = 0;
-    }
-    // Finish MQTT Message
-    msgStr.concat("}");
+    }        
   }
   // *************************
   // Hop if packet was not received in expected time.
@@ -853,7 +844,7 @@ void pollRadio(void) {
     msgStr = "HOP: ";
     msgStr.concat(String(g_hopCount - 1));
     msgStr.concat(" Packets(s) missed, hopping anyway to Channel:");
-    msgStr.concat(String(radio.CHANNEL));    
+    msgStr.concat(String(radio.channel()));    
   }
   // *************************
   // Hop if NO packet was not received for a LONG time.
@@ -866,12 +857,16 @@ void pollRadio(void) {
     radio.hop();    
     DBG_RFM.println(F("HOP: RESYNC (20s)"));
     msgStr = "HOP: RESYNC, new Channel:";
-    msgStr.concat(String(radio.CHANNEL));
+    msgStr.concat(String(radio.channel()));
   }
   // Publish MQTT Message    
   #if DEBUG_RFM
-  mqttPub(T_LOG, msgStr, true);  
+    mqttPub(T_LOG "1", msgStr, true);  
   #endif
+  // Send Data for current Message ID      
+  if (success && g_sendReceivedPackets) {
+    sendIssData(msgID); 
+  }      
 }
 
 
@@ -984,10 +979,10 @@ void sendIssData(uint8_t msgID) {
     // Payload: 80:00:B2:30:A9:00:AA:DA
     msgStr.concat(", \"Payload\": \"");
     for (byte i = 0; i < DAVIS_PACKET_LEN; i++) {
-        if (radio.DATA[i] < 0x10) {
+        if (radio.data(i) < 0x10) {
             msgStr.concat(F("0"));
         }
-        msgStr.concat(String(radio.DATA[i], HEX));
+        msgStr.concat(String(radio.data(i), HEX));
         if (i < DAVIS_PACKET_LEN -1 ) {
           msgStr.concat(":");
         } else {
@@ -996,10 +991,10 @@ void sendIssData(uint8_t msgID) {
     }
     // Channel
     msgStr.concat(", \"Channel\":");
-    msgStr.concat(radio.CHANNEL);            
+    msgStr.concat(radio.channel());            
     // RSSI
     msgStr.concat(", \"RSSI\":");
-    msgStr.concat(radio.RSSI);       
+    msgStr.concat(radio.rssi());       
     // msgID
     msgStr.concat(", \"msgID\":");
     msgStr.concat(msgID);    
@@ -1060,14 +1055,14 @@ void sendIssData(uint8_t msgID) {
     // Statistics
     msgStr.concat(",");
     msgStr.concat("\"millis\":" + String(millis()) + ",");
-    msgStr.concat("\"lastPacketReceivedTime\":" + String(g_lastRxTime) + ",");       
-    msgStr.concat("\"sinceLastPacketReceived\":" + String(g_sinceLastRx) + ",");
-    msgStr.concat("\"packetsReceived\":" + String(g_packetsReceived) + ",");
-    msgStr.concat("\"autoHops\":" + String(g_autoHops) + ",");     
-    msgStr.concat("\"numResyncs\":" + String(g_numResyncs) + ",");     
-    msgStr.concat("\"receivedStreak\":" + String(g_receivedStreak) + ",");
-    msgStr.concat("\"receivedStreakMax\":" + String(g_receivedStreakMax) + ",");           
-    msgStr.concat("\"crcerrors\":" + String(g_crcErrors));     
+    msgStr.concat("\"Longest Blackout\":" + String(g_longestBlackout) + ",");       
+    msgStr.concat("\"Last Packet received\":" + String(g_sinceLastRx) + ",");
+    msgStr.concat("\"Packets received\":" + String(g_packetsReceived) + ",");
+    msgStr.concat("\"Automatic Hops\":" + String(g_autoHops) + ",");     
+    msgStr.concat("\"Number of Resyncs\":" + String(g_numResyncs) + ",");     
+    msgStr.concat("\"Receive Streak\":" + String(g_receivedStreak) + ",");
+    msgStr.concat("\"Longest Receive Streak\":" + String(g_receivedStreakMax) + ",");           
+    msgStr.concat("\"CRC-Errors\":" + String(g_crcErrors));     
     msgStr.concat("}");    
     // Publish MQTT
     mqttPub(T_ISS, msgStr, true);      
@@ -1320,7 +1315,7 @@ void setupOTA(void) {
  ************************************************************/ 
 void setupRadio(void) {
   DBG.print(F("init radio..."));
-  radio.initialize();
+  radio.init();
   radio.setChannel(0);              // Select Channel 0 
   DBG.println(F("done"));
 }
