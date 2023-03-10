@@ -10,29 +10,11 @@
  * Functionality:
  * - Receive Data from Davis Vanage ISS Weather Station
  * - Decode Raw Data to Weather Measurements
- * - This Measurments will be decoded:
- *   - WindSpeed [km/h]
- *   - WindDirection [0-359°]
- *   - BattWarning [0|1]
- *   - Additional Measurments: 
- *     - GustSpeed [km/h]
- *     - OutsideTemperature [°C]
- *     - OutsideHumidity [%rel]
- *     - Rainrate [mm/h]
- *     - SolarRadiation 
- *     - GoldcapVoltage [V]
- *   - Publish Weather Measurements after each Packet received 
- *     (every 2.5s) as Json Data e.g:
- *     {"WindSpeed": 3.22,  
- *     "WindDirection": 257,
- *     "BattWarning": 0, 
- *     "Payload": "80:02:37:1b:ab:0d:4e:dc", 
- *     "Channel":1, 
- *     "RSSI":-74,
- *     "msgID":8,
- *     "OutsideTemperature":6.67}
- * - Each Packet from the Davis ISS contains only one additional 
- *   Measurment.  
+ * - Publish Measurments to MQTT
+ *   - when Packet has been received (each 2.5s)
+ *     - one Packet contains only one additional Measurment.  
+ *   - in a given period 
+ *     - the actual value from all Measurments. 
  ************************************************************
  * Basic Core Functionality:
  * - Wifi Connect (Provide SSID+Pass in platformio.ini)
@@ -116,6 +98,7 @@
 #define T_CMD          "cmd"                      // Topic for Commands (subscribe) (MQTT_PREFIX will be added)
 // Topics used to publish, MQTT_PREFIX will be added
 #define T_ISS          "ISS"                      // Topic for ISS Data
+#define T_HELP         "help"                     // Topic for Help 
 #define T_RFMSTATS     "rfmstats"                 // Topic for RFM69 Statistics
 #define T_CPU          "cpu"                      // Topic for CPU Status
 #define T_LOG          "log"                      // Topic for Logging
@@ -166,91 +149,104 @@ PubSubClient mqtt(MQTT_SERVER, MQTT_PORT, myWiFiClient);
 portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
 
 // CommandParser
-#define PARSER_NUM_COMMANDS   4   // limit number of commands 
+#define PARSER_NUM_COMMANDS   8   // limit number of commands 
 #define PARSER_NUM_ARGS       2   // limit number of arguments
 #define PARSER_CMD_LENGTH     10  // limit length of command names [characters]
-#define PARSER_ARG_SIZE       32  // limit size of all arguments [bytes]
+#define PARSER_ARG_SIZE       16  // limit size of all arguments [bytes]
 #define PARSER_RESPONSE_SIZE  64  // limit size of response strings [bytes]
 typedef CommandParser<PARSER_NUM_COMMANDS, PARSER_NUM_ARGS, PARSER_CMD_LENGTH, PARSER_ARG_SIZE, PARSER_RESPONSE_SIZE> MyCommandParser;
 MyCommandParser parser;
 // Command Handler Prototypes
-void cmd_hello (MyCommandParser::Argument *args, char *response);      // "hello", ""
-void cmd_newday(MyCommandParser::Argument *args, char *response);      // "newDay", ""
-void cmd_setrc (MyCommandParser::Argument *args, char *response);      // "setRC", "u"
-void cmd_reset (MyCommandParser::Argument *args, char *response);      // "reset", ""
+void cmd_allrx   (MyCommandParser::Argument *args, char *response);      // "allrx", "U"
+void cmd_hello   (MyCommandParser::Argument *args, char *response);      // "hello", ""
+void cmd_help    (MyCommandParser::Argument *args, char *response);      // "help"
+void cmd_newday  (MyCommandParser::Argument *args, char *response);      // "newDay", ""
+void cmd_period  (MyCommandParser::Argument *args, char *response);      // "period", "U"
+void cmd_reset   (MyCommandParser::Argument *args, char *response);      // "reset", ""
+void cmd_reboot  (MyCommandParser::Argument *args, char *response);      // "reboot", ""
+void cmd_setrc   (MyCommandParser::Argument *args, char *response);      // "setrc", "u"
 
 // DavisRFM69 radio;            
-DavisRFM69  radio(RFM_CS, RFM_IRQ, RFM_HW);
+DavisRFM69  radio(RFM_CS, RFM_IRQ, RFM_HW);                               
 
 
 /************************************************************
  * Global Vars
  ************************************************************/ 
-boolean       g_Firstrun; 
-// Monitoring
-uint32_t      g_LastHeartbeat_1s; 
-uint32_t      g_LastHeartbeat_10s;
-uint32_t      g_LastHeartbeat_30s;
-uint32_t      g_LastHeartbeat_60s;
-uint32_t      g_LastMqttReconnectAttempt;
-uint32_t      g_LastStateLong;
-uint32_t      g_LastStateShort;
-uint32_t      g_LastNetMonitoring;
-uint32_t      g_LastRollerMonitoring;
-uint8_t       g_LedState;
+boolean       g_Firstrun;                  // To handle things, once
+// CronJob
+uint32_t      g_LastCron_1s;               // ms used for 1 second cron
+uint32_t      g_LastCron_10s;              // ms used for 10 second cron
+uint32_t      g_LastCron_30s;              // ms used for 30 second cron
+uint32_t      g_LastCron_60s;              // ms used for 1 minute cron
 // MQTT
-uint32_t      g_MqttReconnectCount;
+uint32_t      g_MqttReconnectCount;        // How often the MQTT has been reconnected
+uint32_t      g_LastMqttReconnectAttempt;  // Last Time when a MQTT connect was initiated
 // Wifi
-boolean       g_wificonnected;
-const char*   g_wifissid = WIFI_SSID;
-const char*   g_wifipass = WIFI_PSK;
-const char*   g_otahash = OTA_HASH;
-// IRQ
-volatile boolean g_IrqFlag;
-boolean       g_LastIRQ;
+boolean       g_wificonnected;             // State of the WiFi connection
+uint32_t      g_LastNetMonitoring;         // Last Time when Wifi+MQTT have been monitored
+const char*   g_wifissid = WIFI_SSID;      // WiFi SSID
+const char*   g_wifipass = WIFI_PSK;       // WiFi Password, mus be stored in plain, because we have to use it anyway
+const char*   g_otahash = OTA_HASH;        // OTA Password as MD5 Hash, so an Attacker with access to this data can't get the passwort itself
+
 // Reboot Timer
-boolean       g_rebootActive;                // if true trigger reeboot 5s after g_reboot_triggered
-uint32_t      g_rebootTriggered;             // millis() when reboot was started
-boolean       g_lastDebug;
+boolean       g_rebootActive;              // if true trigger reeboot 5s after g_reboot_triggered
+uint32_t      g_rebootTriggered;           // millis() when reboot was started
 // RFM69
-byte          g_hopCount;
-uint32_t      g_lastRxTime;
-uint32_t      g_lastTimeout;
-uint16_t      g_packetsReceived;    // Number of packets with correct CRC
-uint16_t      g_autoHops;           // How often did we HOP because of missing packets
-uint16_t      g_numResyncs;         // How often did we have to resync
-uint16_t      g_receivedStreak;     // Number of uninterruptedly receiverd correct packages
-uint16_t      g_receivedStreakMax;  // Maximum Number of uninterruptedly receiverd correct packages
-uint16_t      g_crcErrors;          // Number of packets with CRC ERROR
+byte          g_hopCount;                  // Number of Auto-Hops due to missing Packet
+uint32_t      g_lastRxTime;                // [ms] when last Packet was received
+uint32_t      g_sinceLastRx;               // [ms] how long it tooks since last Packet was received
+uint32_t      g_lastTimeout;               // Timestamp [ms] used to hop every PACKET_LONGHOP ms, when no packet has been received
+uint32_t      g_longestBlackout;           // Longest Time without reception 
+uint16_t      g_packetsReceived;           // Number of packets with correct CRC
+uint16_t      g_autoHops;                  // How often did we HOP because of missing packets
+uint16_t      g_numResyncs;                // How often did we have to resync
+uint16_t      g_receivedStreak;            // Number of uninterruptedly receiverd correct packages
+uint16_t      g_receivedStreakMax;         // Maximum Number of uninterruptedly receiverd correct packages
+uint16_t      g_crcErrors;                 // Number of packets with CRC ERROR
+boolean       g_sendReceivedPackets;       // Send all received packets with correct CRC
+uint16_t      g_sendIntervall;             // Interval when Data should be published via MQTT
+uint32_t      g_lastDataSend;              // millis() when last Data has been published via MQTT
 // ISS Weather Values
-float         g_windSpeed;
-uint16_t      g_windDirection;
-boolean       g_transmitterBatteryStatus;
-float         g_goldcapChargeStatus;
-float         g_rainRate;
-float         g_solarRadiation;
-float         g_outsideTemperature;
-float         g_gustSpeed;
-float         g_outsideHumidity;
-uint16_t      g_rainClicks;
-uint16_t      g_rainClicksLast;
-uint16_t      g_rainClicksDay;
-unsigned long g_rainClicksSum;
+float         g_windSpeed;                 // Windspeed [km/h]
+uint16_t      g_windDirection;             // Directon of Wind [0-350°]
+boolean       g_transmitterBatteryStatus;  // Battery Status: 0: OK, 1: Warning
+float         g_goldcapChargeStatus;       // Goldcap Charge Status [V]     - msgID = 0x2 
+float         g_rainRate;                  // Rainrate [mm/h]               - msgID = 0x5
+float         g_solarRadiation;            // Solar Radiation [?]           - msgID = 0x7
+float         g_outsideTemperature;        // Outside Temperature [°C]      - msgID = 0x8
+float         g_gustSpeed;                 // Gust Speed [km/h]             - msgID = 0x9
+float         g_outsideHumidity;           // Outside Humidity [%rel]       - msgID = 0xa
+uint16_t      g_rainClicks;                // Rainclicks received [0-127]   - msgID = 0xe
+uint16_t      g_rainClicksLast;            // Last Rainclicks received
+uint16_t      g_rainClicksDay;             // Rainclicks since last reset
+unsigned long g_rainClicksSum;             // Rainclicks overall
 
 
 /************************************************************
- * IRQ Handler
- * - called whenever GPIO goes low
+ * Command "allrx"
+ * @param[in] uint64 0: Don't Send each received Packet, 1: Send each received Packet
+ * @returns String "Sending all received Packets: Yes"
  ************************************************************/ 
-void IRAM_ATTR irqHandler(void){
-  portENTER_CRITICAL(&mux);
-  g_IrqFlag = true;
-  portEXIT_CRITICAL(&mux);    
+void cmd_allrx (MyCommandParser::Argument *args, char *response) {
+  String msgStr;  
+  msgStr = "Sending all received Packets: ";  
+  if (args[0].asUInt64 ==0) {
+    msgStr.concat("No");    
+    g_sendReceivedPackets = false;
+  } else {
+    msgStr.concat("Yes");    
+    g_sendReceivedPackets = true;
+  }   
+  msgStr.toCharArray(response, MyCommandParser::MAX_RESPONSE_SIZE);  
 }
+
 
 /************************************************************
  * Command "hello"
  * - Return: `world` 
+ * @param[in] void
+ * @returns String "world"
  ************************************************************/ 
 void cmd_hello(MyCommandParser::Argument *args, char *response) {  
   String msgStr;  
@@ -259,8 +255,23 @@ void cmd_hello(MyCommandParser::Argument *args, char *response) {
 }
 
 /************************************************************
+ * Command "help"
+ * - Sends complete Command List
+ * @param[in] void
+ * @returns String "OK"
+ ************************************************************/ 
+void cmd_help (MyCommandParser::Argument *args, char *response) {  
+  String msgStr;  
+  sendHelp();
+  msgStr = "Help published on Topic: ";  
+  msgStr.concat(MQTT_PREFIX "/" T_HELP);
+  msgStr.toCharArray(response, MyCommandParser::MAX_RESPONSE_SIZE);
+}
+
+/************************************************************
  * Command "newday"
- * - Return: `world` 
+ * @param[in] void
+ * @returns String "Daily Rain-Click counter set to 0"
  ************************************************************/ 
 void cmd_newday(MyCommandParser::Argument *args, char *response) {  
   String msgStr;    
@@ -270,8 +281,56 @@ void cmd_newday(MyCommandParser::Argument *args, char *response) {
 }
 
 /************************************************************
+ * Command "period"
+ * @param[in] uint64 time in seconds - 0: Nont Send
+ * @returns String "Message Period set to 42"
+ ************************************************************/ 
+void cmd_period  (MyCommandParser::Argument *args, char *response) {
+  String msgStr;  
+  g_sendIntervall = args[0].asUInt64;
+  msgStr = "Message Period set to ";  
+  msgStr.concat(g_sendIntervall);
+  msgStr.toCharArray(response, MyCommandParser::MAX_RESPONSE_SIZE);  
+}
+
+/************************************************************
+ * Command "reboot"
+ * - Reboot ESP32
+ * @param[in] void
+ * @returns String "Rebooting in 5 seconds ... [please standby]."
+ ************************************************************/ 
+void cmd_reboot(MyCommandParser::Argument *args, char *response) {
+  String msgStr;  
+  msgStr = "Rebooting in 5 seconds ... [please standby].";
+  g_rebootActive = true;
+  g_rebootTriggered = millis();
+  msgStr.toCharArray(response, MyCommandParser::MAX_RESPONSE_SIZE);    
+}
+
+/************************************************************
+ * Command "reset"
+ * - Reset Statistics
+ * @param[in] void
+ * @returns String "Statistics resetted."
+ ************************************************************/ 
+void cmd_reset(MyCommandParser::Argument *args, char *response) {
+  String msgStr;  
+  msgStr = "Statistics resetted.";
+  g_longestBlackout   = 0;  // Longest Time without reception 
+  g_packetsReceived   = 0;  // Number of packets with correct CRC
+  g_autoHops          = 0;  // How often did we HOP because of missing packets
+  g_numResyncs        = 0;  // How often did we have to resync
+  g_receivedStreak    = 0;  // Number of uninterruptedly receiverd correct packages
+  g_receivedStreakMax = 0;  // Maximum Number of uninterruptedly receiverd correct packages
+  g_crcErrors         = 0;  // Number of packets with CRC ERROR  
+  msgStr.toCharArray(response, MyCommandParser::MAX_RESPONSE_SIZE);    
+}
+
+/************************************************************
  * Command "setrc NEWVAL"
- * - Return: `[STRING]` 
+ * - Set Raincounter
+ * @param[in] void
+ * @returns String "Raincounter set to 42"
  ************************************************************/ 
 void cmd_setrc(MyCommandParser::Argument *args, char *response) {      
   String msgStr;  
@@ -279,19 +338,6 @@ void cmd_setrc(MyCommandParser::Argument *args, char *response) {
   msgStr = "Raincounter set to ";  
   msgStr.concat(g_rainClicksSum);
   msgStr.toCharArray(response, MyCommandParser::MAX_RESPONSE_SIZE);  
-}
-
-
-/************************************************************
- * Command "reset"
- * - Reboot ESP32
- ************************************************************/ 
-void cmd_reset(MyCommandParser::Argument *args, char *response) {
-  String msgStr;  
-  msgStr = "Rebooting in 5 seconds ... [please standby]: ";
-  g_rebootActive = true;
-  g_rebootTriggered = millis();
-  msgStr.toCharArray(response, MyCommandParser::MAX_RESPONSE_SIZE);    
 }
 
 
@@ -467,27 +513,27 @@ void mqttPub(String subtopic, String msg, boolean mqttOnly){
 void cronjob(void) {
   // once on Startup
   if (g_Firstrun) {
-      g_LastHeartbeat_1s = millis();          
-      g_LastHeartbeat_10s = g_LastHeartbeat_1s;    
-      g_LastHeartbeat_30s = g_LastHeartbeat_1s;    
-      g_LastHeartbeat_60s = g_LastHeartbeat_1s;    
+      g_LastCron_1s = millis();          
+      g_LastCron_10s = g_LastCron_1s;    
+      g_LastCron_30s = g_LastCron_1s;    
+      g_LastCron_60s = g_LastCron_1s;    
       oncePerSecond();        
       oncePerTenSeconds();
       oncePerThirtySeconds();
       oncePerMinute();          
   } else {
     // once a second  
-    if ((millis() - g_LastHeartbeat_1s) > T_HEARTBEAT_1S) {
-      g_LastHeartbeat_1s = millis();    
+    if ((millis() - g_LastCron_1s) > T_HEARTBEAT_1S) {
+      g_LastCron_1s = millis();    
       oncePerSecond();        
-      if ((millis() - g_LastHeartbeat_10s) > T_HEARTBEAT_10S) {
-        g_LastHeartbeat_10s = g_LastHeartbeat_1s;    
+      if ((millis() - g_LastCron_10s) > T_HEARTBEAT_10S) {
+        g_LastCron_10s = g_LastCron_1s;    
         oncePerTenSeconds();
-        if ((millis() - g_LastHeartbeat_30s) > T_HEARTBEAT_30S) {
-          g_LastHeartbeat_30s = g_LastHeartbeat_1s;    
+        if ((millis() - g_LastCron_30s) > T_HEARTBEAT_30S) {
+          g_LastCron_30s = g_LastCron_1s;    
           oncePerThirtySeconds();
-          if ((millis() - g_LastHeartbeat_60s) > T_HEARTBEAT_60S) {
-            g_LastHeartbeat_60s = g_LastHeartbeat_1s;    
+          if ((millis() - g_LastCron_60s) > T_HEARTBEAT_60S) {
+            g_LastCron_60s = g_LastCron_1s;    
             oncePerMinute();
           }
         }
@@ -501,8 +547,14 @@ void cronjob(void) {
  * Once per Second
  * - execute things once every second
  ************************************************************/ 
-void oncePerSecond(void) {
-  // Insert here Actions, which should occure every Second
+void oncePerSecond(void) {  
+  // Send Data every g_sendIntervall [s]
+  if (g_sendIntervall > 0) {
+    if ((millis() - g_lastDataSend) > g_sendIntervall * 1000) {
+      g_lastDataSend = millis();
+      sendIssData(0xff);
+    }
+  }
 }
 
 
@@ -688,16 +740,19 @@ void parseIssData() {
  ************************************************************/ 
 void pollRadio(void) {
   String msgStr;
+  uint32_t now;
+  uint8_t msgID;
   // *************************
   // * RF-Packet received
   // * - check CRC
   // * - process values if CRC OK
   uint16_t crc; // CRC16 XModem Value
   if (radio.receiveDone()) {         
+    now = millis();
     DBG_RFM.println("Packet received: ");    
     msgStr = "{";    
     // millis
-    msgStr.concat("\"Millis\":" + String(millis()));
+    msgStr.concat("\"Millis\":" + String(now));
     // Channel
     DBG_RFM.print("Channel: ");
     DBG_RFM.println(radio.CHANNEL);
@@ -732,7 +787,11 @@ void pollRadio(void) {
     msgStr.concat("\",");
     // verify CRC    
     if ((crc == (word(radio.DATA[6], radio.DATA[7]))) && (crc != 0)) {
-      g_lastRxTime = millis();
+      if ((g_lastRxTime - now) > g_longestBlackout) {
+        g_longestBlackout = g_lastRxTime - now;
+      }
+      g_sinceLastRx = now - g_lastRxTime;
+      g_lastRxTime = now;
       g_packetsReceived++;
       // Hop to next Channel if CRC was correct
       DBG_RFM.println("CRC OK");
@@ -747,7 +806,12 @@ void pollRadio(void) {
       }
       // Parse the RFM Data
       parseIssData();
-      sendIssMqtt();
+      // Send Data for current Message ID      
+      msgID = (radio.DATA[0] & 0xf0) >> 4;
+      mqttPub("DEBUG", String(msgID), true);  
+      if (g_sendReceivedPackets) {
+        sendIssData(msgID); 
+      }      
     } else {            
       // don`t try  again on same channel      
       radio._packetReceived = false;
@@ -855,49 +919,69 @@ void sendCPUState(boolean mqttOnly) {
 }
 
 
+/************************************************************
+ * Send Help for Available Commands 
+ ************************************************************/ 
+void sendHelp(void) {
+  String msgStr;  
+  msgStr = "Commands\r\n";  
+  msgStr.concat("allrx  [0|1]  - Switch on/Off Message for each Packed received 0:off, 1_on\r\n");
+  msgStr.concat("hello         - Ping\r\n");
+  msgStr.concat("help          - Send Help\r\n");
+  msgStr.concat("newday        - Reset Daily Raincounter\r\n");
+  msgStr.concat("period [S]    - Set Message Period to S seconds\r\n");
+  msgStr.concat("reboot        - Reboot\r\n");
+  msgStr.concat("reset         - Reset Statistics\r\n");
+  msgStr.concat("setrc [N]     - Set Raincounter to N");
+  mqttPub(T_HELP, msgStr, true);
+}
+
  
-/* ###################################################
- * # Send Received Packet to MQTT over Software Serial
- * ###################################################
- * sends Data to ESP via Softwareserial
- * Format Template:
- * - {"WindSpeed": 31.415,
- *    "WindDirection" : 314,
- *    "BattWarning": 1,              
- *    "Payload" : 80;00;B2;30;A9;00;AA;DA;    
- *    "Channel": 4,
- *    "RSSI" : -58,
- *    "GoldcapVoltage" : 3.1415,     // when msgID = 0x2
- *    "Rainrate" : 31.415,           // when msgID = 0x5
- *    "SolarRadiation" : 3141,       // when msgID = 0x7
- *    "OutsideTemperature":31.4,     // when msgID = 0x8
- *    "GustSpeed" : 314.15,          // when msgID = 0x9
- *    "OutsideHumidity" : 31,        // when msgID = 0xA
- *    "RainClicks": 314,             // when msgID = 0xE
- *    "packetsReceived":169,
- *    "autoHops":152",
- *    "numResyncs":42",   
- *    "receivedStreak":23,     
- *    "receivedStreakMax":2423,
- *    "crcerrors":12" 
+/*********************************************************
+ * Send Received Packet to MQTT over Software Serial
+ *********************************************************
+ * - sends Data to ESP via Softwareserial
+ * - Format Template:
+ *   {"WindSpeed": 31.415,                   // Windspeed [km/h]
+ *    "WindDirection" : 314,                 // Directon of Wind [0-350°]
+ *    "BattWarning": 1,                      // Battery Status: 0: OK, 1: Warning
+ *    "Payload" : 80:00:B2:30:A9:00:A0:DA    // Raw Payload of received Packet
+ *    "Channel": 4,                          // Channel during last packet
+ *    "RSSI" : -58,                          // RSSI during last packet
+ *    "GoldcapVoltage" : 3.1415,             // when msgID = 0x2
+ *    "Rainrate" : 31.415,                   // when msgID = 0x5
+ *    "SolarRadiation" : 3141,               // when msgID = 0x7
+ *    "OutsideTemperature":31.4,             // when msgID = 0x8
+ *    "GustSpeed" : 314.15,                  // when msgID = 0x9
+ *    "OutsideHumidity" : 31,                // when msgID = 0xA
+ *    "RainClicks": 314,                     // when msgID = 0xE
+ *    "millis": 678015,                      // millisecons since boot [ms]
+ *    "lastpacketreceived": 675048,          // [ms] since last packet was received from ISS     
+ *    "packetsReceived":169,                 // Number of packets received (correct CRC)
+ *    "autoHops":152",                       // Number of Autohops, because of single missing Packets
+ *    "numResyncs":42",                      // Number of Resyncs (at least one Packet missed) 
+ *    "receivedStreak":23,                   // Number of Packets received without Error in current streak
+ *    "receivedStreakMax":2423,              // Maximum Number of Packets received without Error
+ *    "crcerrors":12"}                       // Number of CRC-Errors during receptions
+ *************************************************************************
+ * @param[in] msgID: - 255: Send all Data, other send only Data belonging to msgID
  **************************************************************************/
-void sendIssMqtt(void) {    
-    String msgStr;
-    uint8_t msgID;       
-    // {"WindSpeed": 31.415,
+void sendIssData(uint8_t msgID) {    
+    String msgStr;    
+    // WindSpeed
     msgStr = "{\"WindSpeed\": ";
     msgStr.concat(g_windSpeed);
-    // "WindDirection" : 314,
+    // Wind Direction
     msgStr.concat(", \"WindDirection\": ");
     msgStr.concat(g_windDirection);
-    // "BattWarning": 1,              
+    // Battery Warning
     msgStr.concat(", \"BattWarning\": ");
     if (g_transmitterBatteryStatus){
       msgStr.concat("1");
     } else {
       msgStr.concat("0");  
     }    
-    // "Payload" : 80;00;B2;30;A9;00;AA;DA;    
+    // Payload: 80:00:B2:30:A9:00:AA:DA
     msgStr.concat(", \"Payload\": \"");
     for (byte i = 0; i < DAVIS_PACKET_LEN; i++) {
         if (radio.DATA[i] < 0x10) {
@@ -910,73 +994,79 @@ void sendIssMqtt(void) {
           msgStr.concat("\"");
         }        
     }
-    // "Channel": 4,
+    // Channel
     msgStr.concat(", \"Channel\":");
     msgStr.concat(radio.CHANNEL);            
-    // "RSSI" : -58}
+    // RSSI
     msgStr.concat(", \"RSSI\":");
-    msgStr.concat(radio.RSSI);   
-    // get msgID
-    msgID = (radio.DATA[0] & 0xf0) >>4 ;                
-    // "msgID" : 1}
+    msgStr.concat(radio.RSSI);       
+    // msgID
     msgStr.concat(", \"msgID\":");
-    msgStr.concat(msgID);
-    msgStr.concat(", ");    
-    switch (msgID) {
-        case 0x2: // "GoldcapVoltage" : 3.1415,     
-            msgStr.concat("\"GoldcapVoltage\":");
-            msgStr.concat(g_goldcapChargeStatus);
-            break;
-        case 0x3: // Unknown value, insert Pressure instead
-            #if HAS_BMP085 
-                myString.concat(F("\"Pressure\" : "));
-                myString.concat(g_pressPa);             
-                myString.concat(F(", \"PressureAtSealevel\" : "));
-                myString.concat(g_pressPaSea);
-                myString.concat(F(", \"InsideTemperature\" : "));
-                myString.concat(g_insideTemperature);
-            #else
-                msgStr.concat("\"Unknown msgID\":3");
-            #endif // HAS_BMP085 
-            break;
-        case 0x5: // "Rainrate" : 31.415,           
-            msgStr.concat("\"Rainrate\":");
-            msgStr.concat(g_rainRate);
-            break;
-        case 0x7: // "SolarRadiation" : 3141,       
-            msgStr.concat("\"SolarRadiation\":");
-            msgStr.concat(g_solarRadiation);
-            break;
-        case 0x8: // "OutsideTemperature":31.4,     
-            msgStr.concat("\"OutsideTemperature\":");
-            msgStr.concat(g_outsideTemperature);
-            break;
-        case 0x9: // "GustSpeed" : 314.15,          
-            msgStr.concat("\"GustSpeed\":");
-            msgStr.concat(g_gustSpeed);
-            break;
-        case 0xa: // "OutsideHumidity" : 31,        
-            msgStr.concat("\"OutsideHumidity\":");
-            msgStr.concat(g_outsideHumidity);
-            break;
-        case 0xe: // "RainClicks": 314,             
-            msgStr.concat("\"RainClicks\":");
-            msgStr.concat(g_rainClicks);
-            msgStr.concat(", \"RainClicksDay\":");
-            msgStr.concat(g_rainClicksDay);
-            msgStr.concat(", \"RainClicksSum\":");                        
-            msgStr.concat(g_rainClicksSum);
-            break;
+    msgStr.concat(msgID);    
+    // GoldcapVoltage
+    if ((msgID == 0x2) || (msgID =0xff)) {
+      msgStr.concat(", \"GoldcapVoltage\":");
+      msgStr.concat(g_goldcapChargeStatus);
+    }
+    // Unknown msgID 0x3
+    if ((msgID == 0x3) || (msgID =0xff)) {
+      #if HAS_BMP085 
+        myString.concat(F("\"Pressure\" : "));
+        myString.concat(g_pressPa);             
+        myString.concat(F(", \"PressureAtSealevel\" : "));
+        myString.concat(g_pressPaSea);
+        myString.concat(F(", \"InsideTemperature\" : "));
+        myString.concat(g_insideTemperature);
+      #else
+        if (msgID == 0x3) {
+          msgStr.concat(", \"Unknown msgID\":3");
+        }
+      #endif // HAS_BMP085 
+    }
+    // Rainrate
+    if ((msgID == 0x5) || (msgID =0xff)) {
+      msgStr.concat(", \"Rainrate\":");
+      msgStr.concat(g_rainRate);
+    }
+    // SolarRadiation
+    if ((msgID == 0x7) || (msgID =0xff)) {
+      msgStr.concat(", \"SolarRadiation\":");
+      msgStr.concat(g_solarRadiation);
+    }
+    // OutsideTemperature
+    if ((msgID == 0x8) || (msgID =0xff)) {
+      msgStr.concat(", \"OutsideTemperature\":");
+      msgStr.concat(g_outsideTemperature);
+    }
+    // GustSpeed
+    if ((msgID == 0x9) || (msgID =0xff)) {
+      msgStr.concat(", \"GustSpeed\":");
+      msgStr.concat(g_gustSpeed);
+    }
+    // OutsideHumidity
+    if ((msgID == 0xa) || (msgID =0xff)) {
+      msgStr.concat(", \"OutsideHumidity\":");
+      msgStr.concat(g_outsideHumidity);
+    }
+    // RainClicks
+    if ((msgID == 0xe) || (msgID =0xff)) {
+      msgStr.concat(", \"RainClicks\":");
+      msgStr.concat(g_rainClicks);
+      msgStr.concat(", \"RainClicksDay\":");
+      msgStr.concat(g_rainClicksDay);
+      msgStr.concat(", \"RainClicksSum\":");
+      msgStr.concat(g_rainClicksSum);
     }         
     // Statistics
     msgStr.concat(",");
     msgStr.concat("\"millis\":" + String(millis()) + ",");
-    msgStr.concat("\"lastpacketreceived\":" + String(g_lastRxTime) + ",");
+    msgStr.concat("\"lastPacketReceivedTime\":" + String(g_lastRxTime) + ",");       
+    msgStr.concat("\"sinceLastPacketReceived\":" + String(g_sinceLastRx) + ",");
     msgStr.concat("\"packetsReceived\":" + String(g_packetsReceived) + ",");
     msgStr.concat("\"autoHops\":" + String(g_autoHops) + ",");     
     msgStr.concat("\"numResyncs\":" + String(g_numResyncs) + ",");     
     msgStr.concat("\"receivedStreak\":" + String(g_receivedStreak) + ",");
-    msgStr.concat("\"receivedStreakMax\":" + String(g_receivedStreakMax) + ",");       
+    msgStr.concat("\"receivedStreakMax\":" + String(g_receivedStreakMax) + ",");           
     msgStr.concat("\"crcerrors\":" + String(g_crcErrors));     
     msgStr.concat("}");    
     // Publish MQTT
@@ -1037,34 +1127,56 @@ void sendSketchState(boolean mqttOnly) {
                   
 
 /************************************************************
+ * Init Command Parser
+ ************************************************************/ 
+void setupCommandParser(void) {  
+  DBG_SETUP.print("- Init Command Parser... ");  
+  // "command", Params, Callback-Function 
+  // s: String, d:Double, u:Unsigned Int , i:Signed Integer  
+  parser.registerCommand("allrx",  "u", &cmd_allrx);                  // allrx  - Switch on/Off Message for each Packed received
+  parser.registerCommand("hello",  "",  &cmd_hello);                  // hello  - Ping  
+  parser.registerCommand("help",   "",  &cmd_help);                   // help   - Send Help 
+  parser.registerCommand("newday", "",  &cmd_newday);                 // newday - Reset Daily Raincounter
+  parser.registerCommand("period", "u", &cmd_period);                 // period - Set Message Period
+  parser.registerCommand("reboot", "",  &cmd_reboot);                 // reboot - Reboot ESP32
+  parser.registerCommand("reset",  "",  &cmd_reset);                  // reset  - Reset Statistics
+  parser.registerCommand("setrc",  "u", &cmd_setrc);                  // setRC  - Set Raincounter
+  DBG_SETUP.println("done.");
+  delay(DEBUG_SETUP_DELAY);  
+}
+
+
+/************************************************************
  * Init Global Vars
  ************************************************************/ 
 void setupGlobalVars(void){
   DBG_SETUP.print("- Global Vars ... ");    
   g_Firstrun = true;
-  g_LastHeartbeat_1s = millis();       
-  g_LastHeartbeat_10s = millis();       
-  g_LastHeartbeat_30s = millis();       
-  g_LastHeartbeat_60s = millis();       
+  g_LastCron_1s = millis();       
+  g_LastCron_10s = millis();       
+  g_LastCron_30s = millis();       
+  g_LastCron_60s = millis();       
   g_LastMqttReconnectAttempt = millis();     
-  g_LastNetMonitoring = millis();          // Timer for Monitoring Network 
-  g_LedState = 0;    
+  g_LastNetMonitoring = millis();          // Timer for Monitoring Network   
   g_MqttReconnectCount = 0;  
-  g_wificonnected = false;
-  g_IrqFlag = false;
-  g_LastIRQ = true;  
-  g_rebootActive = false;                  // if true trigger reeboot 5s after g_reboot_triggered
+  g_wificonnected = false;  
+  g_rebootActive = false;                  
   g_rebootTriggered = millis();            // millis() when reboot was started  
   // RFM69
   g_hopCount = 0;
   g_lastRxTime = 0;    
+  g_sinceLastRx = 0;
   g_lastTimeout = 0;  
+  g_longestBlackout = 0;  
   g_packetsReceived = 0;
   g_autoHops = 0;
   g_numResyncs = 0;
   g_receivedStreak = 0;
   g_receivedStreakMax = 0;
   g_crcErrors = 0;  
+  g_sendReceivedPackets = true;
+  g_sendIntervall = 30;
+  g_lastDataSend = 0;
   // ISS Weather Data
   g_windSpeed = -1;
   g_windDirection = 999;
@@ -1162,6 +1274,8 @@ void setupOTA(void) {
     // NOTE: if updating FS this would be the place to unmount FS using FS.end()
     // DBG_SETUP.println("Start updating " + type);
     dbgout("Update Started: " + type);
+    // Switch Radio to standby -> don't mess up with receive interrupts
+    radio.standby();
   });  
 
   // OTA Callback: onEnd
@@ -1283,12 +1397,7 @@ void setup(void) {
   setupMQTT();
    
   // MQTT Command Parser
-  // "command", Params, Callback-Function 
-  // s: String, d:Double, u:Unsigned Int , i:Signed Integer  
-  parser.registerCommand("hello",  "",  &cmd_hello);                  // hello  - Ping  
-  parser.registerCommand("newday", "",  &cmd_newday);                 // newday - Reset Daily Raincounter
-  parser.registerCommand("setRC",  "s", &cmd_setrc);                  // setRC  - Set Raincounter
-  parser.registerCommand("reset",  "",  &cmd_reset);                  // reset  - Reboot
+  setupCommandParser();
   
   // RFM-Radio
   setupRadio();
@@ -1319,8 +1428,3 @@ void loop(void) {
   //   setupRadio(void);
   pollRadio();
 }
-
-
-
-
- 

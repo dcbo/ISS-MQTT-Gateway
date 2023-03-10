@@ -25,6 +25,7 @@ void   sendCPUState(boolean);
 void   sendNetworkState(boolean);
 void   sendSketchState(boolean);
 void   setup(void);
+void   setupCommandParser(void);
 void   setupGlobalVars(void);
 void   setupGPIO(void);
 void   setupIRQ(void);
@@ -34,5 +35,6 @@ void   setupWIFI(void);
 void   setupRadio(void);
 void   pollRadio(void);
 void   parseIssData(void);
-void   sendIssMqtt(void);
+void   sendHelp(void);
+void   sendIssData(uint8_t msgID);
 #endif

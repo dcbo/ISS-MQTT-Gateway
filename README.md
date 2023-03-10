@@ -61,11 +61,25 @@ Receive data from Davis Vantage Vue ISS - Weather Station and publish Measuremen
 ## Set Rain-Click Counter
 ### `cmd_setrc [newvalue]`
  Example:
- * command: `cmd_setrc 42` 
- * response: `Raincounter set to 42` :
+ * command: `setrc 42` 
+ * response: `Raincounter set to 42`
 
-## Reboot the ESP32
+## Reset Statistics
+Set Statistical values to 0:
+ * Longest Time without reception 
+ * Number of packets with correct CRC
+ * How often did we HOP because of missing packets
+ * How often did we have to resync
+ * Number of uninterruptedly receiverd correct packages
+ * Maximum Number of uninterruptedly receiverd correct packages
+ * Number of packets with CRC ERROR    
 ### `reset`
 Example:
  * command: `reset` 
+ * response: `Raincounter set to 42`
  
+## Reboot ESP32
+### `reboot`
+Example:
+ * command: `reboot` 
+ * response: `Rebooting in 5 seconds ... [please standby].` 
