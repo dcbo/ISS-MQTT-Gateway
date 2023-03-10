@@ -1,6 +1,6 @@
 // Driver implementation for HopeRF RFM69W/RFM69HW, Semtech SX1231/1231H used for
-// compatibility with the frequency hopped, spread spectrum signals from a Davis Instrument
-// wireless Integrated Sensor Suite (ISS)
+// compatibility with the frequency hopped, spread spectrum signals from 
+// a Davis Instrument wireless Integrated Sensor Suite (ISS)
 //
 // This is part of the DavisRFM69 library from https://github.com/dekay/DavisRFM69
 // (C) DeKay 2014 dekaymail@gmail.com
@@ -14,18 +14,20 @@
 #include <RFM69registers.h>
 #include <SPI.h>
 
-volatile byte DavisRFM69::DATA[DAVIS_PACKET_LEN];
-volatile byte DavisRFM69::_mode;                                  // current transceiver state
-volatile bool DavisRFM69::_packetReceived = false;
-volatile byte DavisRFM69::CHANNEL = 0;
-volatile int DavisRFM69::RSSI;                                    // RSSI measured immediately after payload reception
+volatile byte DavisRFM69::_data[DAVIS_PACKET_LEN];                 // packet receive buffer
+volatile byte DavisRFM69::_channel = 0;                            // actual channel
+volatile bool DavisRFM69::_gotPacket = false;                      // current packet has been read
+volatile bool DavisRFM69::_packetReceived = false;                 // packet has been received
+volatile int  DavisRFM69::_rssi;                                   // RSSI measured immediately after payload reception
+volatile byte DavisRFM69::_mode;                                   // current transceiver state
 
 DavisRFM69* DavisRFM69::selfPointer;
 
-void DavisRFM69::initialize()
-{
-  const byte CONFIG[][2] =
-  {
+/************************************************************
+ * Init receiver 
+ ************************************************************/
+void DavisRFM69::init(void) {
+  const byte CONFIG[][2] = {
     /* 0x01 */ { REG_OPMODE, RF_OPMODE_SEQUENCER_ON | RF_OPMODE_LISTEN_OFF | RF_OPMODE_STANDBY },
     /* 0x02 */ { REG_DATAMODUL, RF_DATAMODUL_DATAMODE_PACKET | RF_DATAMODUL_MODULATIONTYPE_FSK | RF_DATAMODUL_MODULATIONSHAPING_10 }, // Davis uses Gaussian shaping with BT=0.5
     /* 0x03 */ { REG_BITRATEMSB, RF_BITRATEMSB_19200}, // Davis uses a datarate of 19.2 KBPS
@@ -86,114 +88,159 @@ void DavisRFM69::initialize()
     /* 0x71 */ { REG_TESTAFC, 0 }, // AFC Offset for low mod index systems
     {255, 0}
   };
-
+  
+  // init SPI
   pinMode(_slaveSelectPin, OUTPUT);
   SPI.setDataMode(SPI_MODE0);
   SPI.setBitOrder(MSBFIRST);
   SPI.setClockDivider(SPI_CLOCK_DIV2); //max speed, except on Due which can run at system clock speed
   SPI.begin();
 
-  do writeReg(REG_SYNCVALUE1, 0xaa); while (readReg(REG_SYNCVALUE1) != 0xaa);
-        do writeReg(REG_SYNCVALUE1, 0x55); while (readReg(REG_SYNCVALUE1) != 0x55);
+  // sync
+  do {
+    writeReg(REG_SYNCVALUE1, 0xaa);
+  } while (readReg(REG_SYNCVALUE1) != 0xaa);
+  do {
+     writeReg(REG_SYNCVALUE1, 0x55); 
+  } while (readReg(REG_SYNCVALUE1) != 0x55);
 
-  for (byte i = 0; CONFIG[i][0] != 255; i++)
+  // send config
+  for (byte i = 0; CONFIG[i][0] != 255; i++) {
     writeReg(CONFIG[i][0], CONFIG[i][1]);
-
-  setHighPower(_isRFM69HW); //called regardless if it's a RFM69W or RFM69HW
+  }
+  
+  // Standby
   setMode(RF69_MODE_STANDBY);
-  while ((readReg(REG_IRQFLAGS1) & RF_IRQFLAGS1_MODEREADY) == 0x00); // Wait for ModeReady
-  attachInterrupt(2, DavisRFM69::isr0, RISING);
+  
+  // Wait for ModeReady
+  while ((readReg(REG_IRQFLAGS1) & RF_IRQFLAGS1_MODEREADY) == 0x00); 
+  
+  // Register ISR
+  pinMode(_interruptPin, INPUT);
+  attachInterrupt(_interruptPin, DavisRFM69::isr0, RISING);
+  
+  // myself
   selfPointer = this;
 }
 
-void DavisRFM69::interruptHandler() {
-  RSSI = readRSSI();  // Read up front when it is most likely the carrier is still up  
-  if (_mode == RF69_MODE_RX && (readReg(REG_IRQFLAGS2) & RF_IRQFLAGS2_PAYLOADREADY))
-  {    
-    setMode(RF69_MODE_STANDBY);    
+
+/************************************************************
+ * RFM Receive Packet Interrupt Handler 
+ * - read RSSI
+ * - get data received to _data Buffer
+ ************************************************************/
+void DavisRFM69::interruptHandler(void) {
+  _rssi = readRSSI();  // Read up front when it is most likely the carrier is still up  
+  if (_mode == RF69_MODE_RX && (readReg(REG_IRQFLAGS2) & RF_IRQFLAGS2_PAYLOADREADY)) {    
+    setMode(RF69_MODE_STANDBY);        
     select();    // Select RFM69 module, disable interrupts
+    // get data received
     SPI.transfer(REG_FIFO & 0x7f);
     for (byte i = 0; i < DAVIS_PACKET_LEN; i++){
-      DATA[i] = reverseBits(SPI.transfer(0));      
+      _data[i] = reverseBits(SPI.transfer(0));      
     } 
-    _packetReceived = true;
+    _packetReceived = true;    
+    _gotPacket = false;
     unselect();  // Unselect RFM69 module, enable interrupts
   }  
 }
 
-bool DavisRFM69::canSend() {
-  if (_mode == RF69_MODE_RX && readRSSI() < CSMA_LIMIT) //if signal stronger than -100dBm is detected assume channel activity
-  {
-    setMode(RF69_MODE_STANDBY);
-    return true;
-  }
-  return false;
-}
 
-void DavisRFM69::send(const void* buffer, byte bufferSize)
-{
-  writeReg(REG_PACKETCONFIG2, (readReg(REG_PACKETCONFIG2) & 0xFB) | RF_PACKET2_RXRESTART); // avoid RX deadlocks
-  while (!canSend()) receiveDone();
-  sendFrame(buffer, bufferSize);
-}
-
-void DavisRFM69::sendFrame(const void* buffer, byte bufferSize)
-{
-  setMode(RF69_MODE_STANDBY); //turn off receiver to prevent reception while filling fifo
-  while ((readReg(REG_IRQFLAGS1) & RF_IRQFLAGS1_MODEREADY) == 0x00); // Wait for ModeReady
-  writeReg(REG_DIOMAPPING1, RF_DIOMAPPING1_DIO0_00); // DIO0 is "Packet Sent"
-  if (bufferSize > DAVIS_PACKET_LEN) bufferSize = DAVIS_PACKET_LEN;
-
-  unsigned int crc = crc16_ccitt((volatile byte *)buffer, 6);
-  //write to FIFO
-  select();
-  SPI.transfer(REG_FIFO | 0x80);
-
-  for (byte i = 0; i < bufferSize; i++)
-    SPI.transfer(reverseBits(((byte*)buffer)[i]));
-
-  SPI.transfer(reverseBits(crc >> 8));
-  SPI.transfer(reverseBits(crc & 0xff));
-  unselect();
-
-  /* no need to wait for transmit mode to be ready since its handled by the radio */
-  setMode(RF69_MODE_TX);
-  while (digitalRead(_interruptPin) == 0); //wait for DIO0 to turn HIGH signalling transmission finish
-  //while (readReg(REG_IRQFLAGS2) & RF_IRQFLAGS2_PACKETSENT == 0x00); // Wait for ModeReady
-  setMode(RF69_MODE_STANDBY);
-}
-
-void DavisRFM69::setChannel(byte channel)
-{
-  CHANNEL = channel;
-  if (CHANNEL > DAVIS_FREQ_TABLE_LENGTH - 1) CHANNEL = 0;
-  writeReg(REG_FRFMSB, pgm_read_byte(&FRF[CHANNEL][0]));
-  writeReg(REG_FRFMID, pgm_read_byte(&FRF[CHANNEL][1]));
-  writeReg(REG_FRFLSB, pgm_read_byte(&FRF[CHANNEL][2]));
+/************************************************************
+ * Set Channel 
+ * - and activate receiver
+ ************************************************************/
+void DavisRFM69::setChannel(byte channel) {
+  _channel = channel;
+  if (_channel > DAVIS_FREQ_TABLE_LENGTH - 1) _channel = 0;
+  writeReg(REG_FRFMSB, pgm_read_byte(&FRF[_channel][0]));
+  writeReg(REG_FRFMID, pgm_read_byte(&FRF[_channel][1]));
+  writeReg(REG_FRFLSB, pgm_read_byte(&FRF[_channel][2]));
   receiveBegin();
 }
 
-void DavisRFM69::hop()
-{
-  setChannel(++CHANNEL);
+
+/************************************************************
+ * Hop to next Channel and activate receiver 
+ ************************************************************/
+void DavisRFM69::hop(void) {
+  setChannel(++_channel);
 }
 
-// The data bytes come over the air from the ISS least significant bit first. Fix them as we go. From
-// http://www.ocf.berkeley.edu/~wwu/cgi-bin/yabb/YaBB.cgi?board=riddles_cs;action=display;num=1103355188
-byte DavisRFM69::reverseBits(byte b)
-{
+
+/************************************************************
+ * Reverse bits in a byte
+ * - The data bytes come over the air from the ISS have 
+ *   least significant bit first. 
+ * - from http://www.ocf.berkeley.edu/~wwu/cgi-bin/yabb/YaBB.cgi?board=riddles_cs;action=display;num=1103355188
+ * @param[in] b value to be reversed
+ * @return    reversed value
+ ************************************************************/
+byte DavisRFM69::data(byte index) {
+  byte v;
+  if ((index < 0) || (index > 7)) {
+    // no valid index
+    v = 0xff;
+  } else {
+    v = _data[index];
+  }
+  return(v);
+}
+
+/************************************************************
+ * Reverse bits in a byte
+ * - The data bytes come over the air from the ISS have 
+ *   least significant bit first. 
+ * - from http://www.ocf.berkeley.edu/~wwu/cgi-bin/yabb/YaBB.cgi?board=riddles_cs;action=display;num=1103355188
+ * @param[in] b value to be reversed
+ * @return    reversed value
+ ************************************************************/
+byte DavisRFM69::reverseBits(byte b) {
   b = ((b & 0b11110000) >>4 ) | ((b & 0b00001111) << 4);
   b = ((b & 0b11001100) >>2 ) | ((b & 0b00110011) << 2);
   b = ((b & 0b10101010) >>1 ) | ((b & 0b01010101) << 1);
-
   return(b);
 }
 
-// Davis CRC calculation from http://www.menie.org/georges/embedded/
-unsigned int DavisRFM69::crc16_ccitt(volatile byte *buf, byte len, unsigned int initCrc)
-{
-  unsigned int crc = initCrc;
-  while( len-- ) {
+/************************************************************
+ * get CRC16
+ * @return CRC value for packet in receive buffer 
+ ************************************************************/
+uint16_t DavisRFM69::crc16(void) {
+  // First 6 Bate 
+  // unsigned int crc;
+  // crc = compute_crc16(_data, 6);
+  return compute_crc16(_data, 6);
+}
+
+/************************************************************
+ * rssi
+ * @return RSSI measured immediately after payload reception
+ ************************************************************/
+int DavisRFM69::rssi(void) {  
+  return _rssi;
+}
+
+/************************************************************
+ * channel
+ * @return current channel
+ ************************************************************/
+byte DavisRFM69::channel(void) {  
+  return _channel;
+}
+
+
+
+/************************************************************
+ * Davis CRC calculation
+ * - from http://www.menie.org/georges/embedded/
+ * - changed to not support othe start value as 0
+ * @param[in] buf pointer to buffer 
+ * @param[in] len legth of buffer 
+ ************************************************************/
+uint16_t DavisRFM69::compute_crc16(volatile byte *buf, byte len){  
+  unsigned int crc = 0;
+  while (len--) {
     int i;
     crc ^= *(char *)buf++ << 8;
     for( i = 0; i < 8; ++i ) {
@@ -206,29 +253,39 @@ unsigned int DavisRFM69::crc16_ccitt(volatile byte *buf, byte len, unsigned int 
   return crc;
 }
 
-void DavisRFM69::setFrequency(uint32_t FRF)
-{
+
+/************************************************************
+ * Write Frequency
+ * - Write FRF to RFM69 Register
+ * - the 3 FRF Bytes are stored in one uint32_t value
+ * @param[in] FRF value to be written
+ ************************************************************/
+void DavisRFM69::setFrequency(uint32_t FRF) {
   writeReg(REG_FRFMSB, FRF >> 16);
   writeReg(REG_FRFMID, FRF >> 8);
   writeReg(REG_FRFLSB, FRF);
 }
 
-void DavisRFM69::setMode(byte newMode)
-{
-  //Serial.println(newMode);
-  if (newMode == _mode) return;
 
-  switch (newMode) {
+/************************************************************
+ * Set RFM69 Mode  
+ * - TX and SYNTH not needed to receive data from ISS
+ * @param[in] mode  New mode, can be RX, STANDBY, SLEEP
+ ************************************************************/
+void DavisRFM69::setMode(byte mode) {  
+  if (mode == _mode) return;
+  _mode = mode;  
+  switch (_mode) {
     case RF69_MODE_TX:
-      writeReg(REG_OPMODE, (readReg(REG_OPMODE) & 0xE3) | RF_OPMODE_TRANSMITTER);
-      if (_isRFM69HW) setHighPowerRegs(true);
+      // Not supported      
+      // writeReg(REG_OPMODE, (readReg(REG_OPMODE) & 0xE3) | RF_OPMODE_TRANSMITTER);      
       break;
     case RF69_MODE_RX:
-      writeReg(REG_OPMODE, (readReg(REG_OPMODE) & 0xE3) | RF_OPMODE_RECEIVER);
-      if (_isRFM69HW) setHighPowerRegs(false);
+      writeReg(REG_OPMODE, (readReg(REG_OPMODE) & 0xE3) | RF_OPMODE_RECEIVER);      
       break;
     case RF69_MODE_SYNTH:
-      writeReg(REG_OPMODE, (readReg(REG_OPMODE) & 0xE3) | RF_OPMODE_SYNTHESIZER);
+      // Not supported
+      // writeReg(REG_OPMODE, (readReg(REG_OPMODE) & 0xE3) | RF_OPMODE_SYNTHESIZER);
       break;
     case RF69_MODE_STANDBY:
       writeReg(REG_OPMODE, (readReg(REG_OPMODE) & 0xE3) | RF_OPMODE_STANDBY);
@@ -238,50 +295,78 @@ void DavisRFM69::setMode(byte newMode)
       break;
     default: return;
   }
-
   // we are using packet mode, so this check is not really needed
   // but waiting for mode ready is necessary when going from sleep because the FIFO may not be immediately available from previous mode
   while (_mode == RF69_MODE_SLEEP && (readReg(REG_IRQFLAGS1) & RF_IRQFLAGS1_MODEREADY) == 0x00); // Wait for ModeReady
-
-  _mode = newMode;
-  //Serial.print("Mode set to ");
-  //Serial.println(_mode);
 }
 
-void DavisRFM69::sleep() {
+/************************************************************
+ * Set Mode to Sleep
+ ************************************************************/
+void DavisRFM69::sleep(void) {
   setMode(RF69_MODE_SLEEP);
 }
 
-void DavisRFM69::isr0() { selfPointer->interruptHandler(); }
+/************************************************************
+ * Packet Receive ISR
+ ************************************************************/
+void DavisRFM69::isr0(void) { 
+  selfPointer->interruptHandler(); 
+}
 
-void DavisRFM69::receiveBegin() {
+
+/************************************************************
+ * Activate Receiver 
+ ************************************************************/
+void DavisRFM69::receiveBegin(void) {
   _packetReceived = false;
-  if (readReg(REG_IRQFLAGS2) & RF_IRQFLAGS2_PAYLOADREADY)
+  if (readReg(REG_IRQFLAGS2) & RF_IRQFLAGS2_PAYLOADREADY){
     writeReg(REG_PACKETCONFIG2, (readReg(REG_PACKETCONFIG2) & 0xFB) | RF_PACKET2_RXRESTART); // avoid RX deadlocks
-
-  writeReg(REG_DIOMAPPING1, RF_DIOMAPPING1_DIO0_01); //set DIO0 to "PAYLOADREADY" in receive mode
+  }
+  // set DIO0 to "PAYLOADREADY" in receive mode
+  writeReg(REG_DIOMAPPING1, RF_DIOMAPPING1_DIO0_01);                 
   setMode(RF69_MODE_RX);
 }
 
-bool DavisRFM69::receiveDone() {
+/************************************************************
+ * receiveDone
+ ************************************************************
+ * @return  true if packet received since last channel hop
+ ************************************************************/
+bool DavisRFM69::receiveDone(void) {
   return _packetReceived;
 }
 
-int DavisRFM69::readRSSI(bool forceTrigger) {
-  int rssi = 0;
-  if (forceTrigger)
-  {
-    //RSSI trigger not needed if DAGC is in continuous mode
-    writeReg(REG_RSSICONFIG, RF_RSSI_START);
-    while ((readReg(REG_RSSICONFIG) & RF_RSSI_DONE) == 0x00); // Wait for RSSI_Ready
-  }
+/************************************************************
+ * mark current packet as transfered to user
+ ************************************************************
+ * - used to handle autohopping on CRC errors
+ ************************************************************/
+void DavisRFM69::gotPacket(void) {
+  _gotPacket = true;
+}
+
+
+/************************************************************
+ * Read actual RSSI
+ ************************************************************
+ * @return          RSSI value
+ ************************************************************/
+int DavisRFM69::readRSSI(void) {
+  int rssi;  
   rssi = -readReg(REG_RSSIVALUE);
   rssi >>= 1;
   return rssi;
 }
 
-byte DavisRFM69::readReg(byte addr)
-{
+
+/************************************************************
+ * read from RFM Register
+ ************************************************************
+ * @param[in] addr  address of register
+ * @return          registervalue 
+ ************************************************************/
+byte DavisRFM69::readReg(byte addr) {
   select();
   SPI.transfer(addr & 0x7F);
   byte regval = SPI.transfer(0);
@@ -289,57 +374,57 @@ byte DavisRFM69::readReg(byte addr)
   return regval;
 }
 
-void DavisRFM69::writeReg(byte addr, byte value)
-{
+
+/************************************************************
+ * write to RFM Register
+ ************************************************************
+ * @param[in] addr  address of register
+ * @param[in] value value tha ha to be written
+ ************************************************************/
+void DavisRFM69::writeReg(byte addr, byte value) {
   select();
   SPI.transfer(addr | 0x80);
   SPI.transfer(value);
   unselect();
 }
 
-/// Select the transceiver
+
+/************************************************************
+ * SPI select RFM69
+ ************************************************************
+ * - disable Interrupts
+ * - Select RFM (SS: low) 
+ ************************************************************/
 void DavisRFM69::select() {
   noInterrupts();
   digitalWrite(_slaveSelectPin, LOW);
 }
 
-/// Unselect the transceiver chip
+
+/************************************************************
+ * SPI unselect RFM69
+ ************************************************************
+ * - Unselect RFM (SS: high) 
+ * - enable Interrupts
+ ************************************************************/
 void DavisRFM69::unselect() {
   digitalWrite(_slaveSelectPin, HIGH);
   interrupts();
 }
 
-void DavisRFM69::setHighPower(bool onOff) {
-  _isRFM69HW = onOff;
-  writeReg(REG_OCP, _isRFM69HW ? RF_OCP_OFF : RF_OCP_ON);
-  if (_isRFM69HW) //turning ON
-    writeReg(REG_PALEVEL, (readReg(REG_PALEVEL) & 0x1F) | RF_PALEVEL_PA1_ON | RF_PALEVEL_PA2_ON); //enable P1 & P2 amplifier stages
-    else
-      writeReg(REG_PALEVEL, RF_PALEVEL_PA0_ON | RF_PALEVEL_PA1_OFF | RF_PALEVEL_PA2_OFF | _powerLevel); //enable P0 only
-}
 
-void DavisRFM69::setHighPowerRegs(bool onOff) {
-  writeReg(REG_TESTPA1, onOff ? 0x5D : 0x55);
-  writeReg(REG_TESTPA2, onOff ? 0x7C : 0x70);
-}
-
-void DavisRFM69::setCS(byte newSPISlaveSelect) {
-  _slaveSelectPin = newSPISlaveSelect;
-  pinMode(_slaveSelectPin, OUTPUT);
-}
-
-//for debugging
-void DavisRFM69::readAllRegs()
-{
+/************************************************************
+ * read all RFM registers for debugging
+ ************************************************************
+ * Attention: This functions prints directly to serial port
+ ************************************************************/
+void DavisRFM69::readAllRegs() {
   byte regVal;
-
-  for (byte regAddr = 1; regAddr <= 0x4F; regAddr++)
-  {
+  for (byte regAddr = 1; regAddr <= 0x4F; regAddr++) {
     select();
     SPI.transfer(regAddr & 0x7f); // send address + r/w bit
     regVal = SPI.transfer(0);
     unselect();
-
     Serial.print(regAddr, HEX);
     Serial.print(" - ");
     Serial.print(regVal,HEX);
@@ -349,22 +434,38 @@ void DavisRFM69::readAllRegs()
   unselect();
 }
 
-byte DavisRFM69::readTemperature(byte calFactor)  //returns centigrade
-{
+
+/************************************************************
+ * read Chip Temperature
+ ************************************************************
+ * Attention: Mode is set to Standby afterwards
+ ************************************************************
+ * @param[in] calFactor correction factor, rising temp = rising val
+ * @return    Temperature in centigrade
+ ************************************************************/
+byte DavisRFM69::readTemperature(byte calFactor) { 
   setMode(RF69_MODE_STANDBY);
   writeReg(REG_TEMP1, RF_TEMP1_MEAS_START);
   while ((readReg(REG_TEMP1) & RF_TEMP1_MEAS_RUNNING)) Serial.print('*');
-  return ~readReg(REG_TEMP2) + COURSE_TEMP_COEF + calFactor; //'complement'corrects the slope, rising temp = rising val
-}                             // COURSE_TEMP_COEF puts reading in the ballpark, user can add additional correction
+  return ~readReg(REG_TEMP2) + calFactor; 
+}                                                           
 
-void DavisRFM69::rcCalibration()
-{
+
+/************************************************************
+ * Do RC-Calibration
+ ************************************************************/ 
+void DavisRFM69::rcCalibration() {
   writeReg(REG_OSC1, RF_OSC1_RCCAL_START);
   while ((readReg(REG_OSC1) & RF_OSC1_RCCAL_DONE) == 0x00);
 }
 
-// Set Modul to standby
+
+/************************************************************
+ * Set Modul to Standby
+ ************************************************************/ 
 void DavisRFM69::standby(void) {
   setMode(RF69_MODE_STANDBY);  
 }                            
+
+
 
