@@ -362,3 +362,9 @@ void DavisRFM69::rcCalibration()
   writeReg(REG_OSC1, RF_OSC1_RCCAL_START);
   while ((readReg(REG_OSC1) & RF_OSC1_RCCAL_DONE) == 0x00);
 }
+
+// Set Modul to standby
+void DavisRFM69::standby(void) {
+  setMode(RF69_MODE_STANDBY);  
+}                            
+

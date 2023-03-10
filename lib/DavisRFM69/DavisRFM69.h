@@ -78,6 +78,7 @@ class DavisRFM69 {
     byte readReg(byte addr);
     void writeReg(byte addr, byte val);
     void readAllRegs();
+    void standby();
 
   protected:
     void virtual interruptHandler();
