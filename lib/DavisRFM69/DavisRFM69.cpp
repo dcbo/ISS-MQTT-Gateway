@@ -16,7 +16,7 @@
 
 volatile byte DavisRFM69::_data[DAVIS_PACKET_LEN];                 // packet receive buffer
 volatile byte DavisRFM69::_channel = 0;                            // actual channel
-volatile bool DavisRFM69::_gotPacket = false;                      // current packet has been read
+volatile bool DavisRFM69::_hasCrcError = false;                      // current packet has been read
 volatile bool DavisRFM69::_packetReceived = false;                 // packet has been received
 volatile int  DavisRFM69::_rssi;                                   // RSSI measured immediately after payload reception
 volatile byte DavisRFM69::_mode;                                   // current transceiver state
@@ -140,7 +140,7 @@ void DavisRFM69::interruptHandler(void) {
       _data[i] = reverseBits(SPI.transfer(0));      
     } 
     _packetReceived = true;    
-    _gotPacket = false;
+    _hasCrcError = false;
     unselect();  // Unselect RFM69 module, enable interrupts
   }  
 }
@@ -338,12 +338,17 @@ bool DavisRFM69::receiveDone(void) {
 }
 
 /************************************************************
- * mark current packet as transfered to user
- ************************************************************
- * - used to handle autohopping on CRC errors
+ * mark current packet has CRC Error
+  ************************************************************/
+void DavisRFM69::markCrcError(void) {
+  _hasCrcError = true;
+}
+ 
+/************************************************************
+ * get CRC Error State of current packet 
  ************************************************************/
-void DavisRFM69::gotPacket(void) {
-  _gotPacket = true;
+boolean DavisRFM69::getCrcError() {
+  return _hasCrcError;
 }
 
 

@@ -42,14 +42,15 @@ class DavisRFM69 {
       _interruptPin = interruptPin;            
       _mode = RF69_MODE_STANDBY;
       _packetReceived = false;
-      _gotPacket = false;
+      _hasCrcError = false;
     }    
     // functions
     uint16_t crc16(void);                                                   // get crc value from last received packet    
     byte channel(void);                                                     // get actual channel 
     byte data(byte index);                                                  // read byte of receiver data
     bool receiveDone();                                                     // getter for _packetReceived       
-    void gotPacket();                                                       // mark current packet as read
+    void markCrcError(void);                                                // mark current packet has CRC Error
+    boolean getCrcError(void);                                              // get CRC Error State of current packet 
     void setChannel(byte channel);                                          // set current channel
     void hop();                                                             // hot to next channel        
     void init();                                                            // initialize the chip                
@@ -64,7 +65,7 @@ class DavisRFM69 {
     // vars    
     static volatile byte _data[DAVIS_PACKET_LEN];  // receive buffer    
     static volatile byte _channel;                 // actual channel 
-    static volatile bool _gotPacket;               // received packet has been transfered to the user
+    static volatile bool _hasCrcError;               // received packet has been transfered to the user
     static volatile bool _packetReceived;          // a Packet has been received    
     static volatile int  _rssi;                    // RSSI measured immediately after payload reception
     static volatile byte _mode;                                             // mode (sleep, Standby, Synth, RX or TX) 
