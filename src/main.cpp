@@ -198,9 +198,10 @@ uint32_t      g_lastRxTime;                // [ms] when last Packet was received
 uint32_t      g_sinceLastRx;               // [ms] how long it tooks since last Packet was received
 uint32_t      g_lastTimeout;               // Timestamp [ms] used to hop every PACKET_LONGHOP ms, when no packet has been received
 uint32_t      g_longestBlackout;           // Longest Time without reception 
+boolean       g_BlackoutTag;               // Tag to recognise first Blackout Hop 
+uint16_t      g_numBlackouts;              // How often did we have a Blackout (more than 25 Packets missed)
 uint16_t      g_packetsReceived;           // Number of packets with correct CRC
-uint16_t      g_autoHops;                  // How often did we HOP because of missing packets
-uint16_t      g_numResyncs;                // How often did we have to resync
+uint16_t      g_autoHops;                  // How often did we HOP because of missing packets (up to 25 Packets missed)
 uint16_t      g_receivedStreak;            // Number of uninterruptedly receiverd correct packages
 uint16_t      g_receivedStreakMax;         // Maximum Number of uninterruptedly receiverd correct packages
 uint16_t      g_crcErrors;                 // Number of packets with CRC ERROR
@@ -319,7 +320,7 @@ void cmd_reset(MyCommandParser::Argument *args, char *response) {
   g_longestBlackout   = 0;  // Longest Time without reception 
   g_packetsReceived   = 0;  // Number of packets with correct CRC
   g_autoHops          = 0;  // How often did we HOP because of missing packets
-  g_numResyncs        = 0;  // How often did we have to resync
+  g_numBlackouts      = 0;  // How often did we have to resync
   g_receivedStreak    = 0;  // Number of uninterruptedly receiverd correct packages
   g_receivedStreakMax = 0;  // Maximum Number of uninterruptedly receiverd correct packages
   g_crcErrors         = 0;  // Number of packets with CRC ERROR  
@@ -749,7 +750,7 @@ void pollRadio(void) {
   // * - check CRC
   // * - process values if CRC OK  
   success = false;
-  if (radio.receiveDone()) {         
+  if (radio.receiveDone() && !radio.getCrcError()) {         
     now = millis();
     DBG_RFM.println("Packet received: ");    
     msgStr = "Packet received:";    
@@ -785,8 +786,8 @@ void pollRadio(void) {
     msgStr.concat(String(crc, 16));    
     // verify CRC    
     if ((crc == (word(radio.data(6), radio.data(7)))) && (crc != 0)) {
-      if ((g_lastRxTime - now) > g_longestBlackout) {
-        g_longestBlackout = g_lastRxTime - now;
+      if ((now - g_lastRxTime) > g_longestBlackout) {
+        g_longestBlackout = now - g_lastRxTime;
       }
       g_sinceLastRx = now - g_lastRxTime;
       g_lastRxTime = now;
@@ -807,7 +808,7 @@ void pollRadio(void) {
       success = true;      
     } else {            
       // don`t try  again on same channel      
-      radio.gotPacket();
+      radio.markCrcError();
       DBG_RFM.println("Wrong CRC");        
       msgStr.concat(" - ERROR");    
       g_crcErrors++;
@@ -827,10 +828,7 @@ void pollRadio(void) {
   //   - 3rd Hop after 8,0 s  
   if ((g_hopCount > 0) && ((millis() - g_lastRxTime) > (unsigned long)(g_hopCount * PACKET_INTERVAL + PACKET_OFFSET))) {    
     g_receivedStreak = 0;
-    // 1st missed Packet: Increment Resync-Counter
-    if (g_hopCount == 1) {
-      g_numResyncs++;
-    }
+    g_BlackoutTag = true;
     // after 25 missed Packets, no automatic HOP every 2,5s
     if (++g_hopCount > 25) {
       g_hopCount = 0;
@@ -853,6 +851,10 @@ void pollRadio(void) {
   // - if no Packet was received at all
   // - OR if more than 25 Packets were missing
   if ( (g_hopCount == 0) && ( (millis() - g_lastTimeout) > PACKET_LONGHOP) ) {
+    // 1st Hop
+    if (g_BlackoutTag) {
+      g_numBlackouts++;      
+    }
     g_lastTimeout = millis();    
     radio.hop();    
     DBG_RFM.println(F("HOP: RESYNC (20s)"));
@@ -962,7 +964,8 @@ void sendHelp(void) {
  * @param[in] msgID: - 255: Send all Data, other send only Data belonging to msgID
  **************************************************************************/
 void sendIssData(uint8_t msgID) {    
-    String msgStr;    
+    String msgStr;   
+    uint32_t t;
     // WindSpeed
     msgStr = "{\"WindSpeed\": ";
     msgStr.concat(g_windSpeed);
@@ -1055,14 +1058,27 @@ void sendIssData(uint8_t msgID) {
     // Statistics
     msgStr.concat(",");
     msgStr.concat("\"millis\":" + String(millis()) + ",");
+    msgStr.concat("\"Time before Last Packet received\":" + String(g_sinceLastRx) + ",");    
+    msgStr.concat("\"Packets received\":" + String(g_packetsReceived) + ",");    
+    msgStr.concat("\"CRC-Errors\":" + String(g_crcErrors) + ",");
+    msgStr.concat("\"Automatic Hops\":" + String(g_autoHops) + ",");         
+    msgStr.concat("\"Blackouts\":" + String(g_numBlackouts) + ",");     
     msgStr.concat("\"Longest Blackout\":" + String(g_longestBlackout) + ",");       
-    msgStr.concat("\"Last Packet received\":" + String(g_sinceLastRx) + ",");
-    msgStr.concat("\"Packets received\":" + String(g_packetsReceived) + ",");
-    msgStr.concat("\"Automatic Hops\":" + String(g_autoHops) + ",");     
-    msgStr.concat("\"Number of Resyncs\":" + String(g_numResyncs) + ",");     
     msgStr.concat("\"Receive Streak\":" + String(g_receivedStreak) + ",");
-    msgStr.concat("\"Longest Receive Streak\":" + String(g_receivedStreakMax) + ",");           
-    msgStr.concat("\"CRC-Errors\":" + String(g_crcErrors));     
+    msgStr.concat("\"Longest Receive Streak\":" + String(g_receivedStreakMax)+ ",");
+    // Receiver Status:
+    // - OK (less than 3 Packets missed)
+    // - Warning (4 to 20 Packets missed)
+    // - Error (more than one Minute without Data)
+    msgStr.concat("\"Receiver Status\":");    
+    t = millis() - g_lastRxTime;
+    if (t < 10000) {                               // 10s no Reception (3 Packets)
+    msgStr.concat("\"OK\"");
+    } else if (t < 60000) {                        // 60s no Reception (20 Packets)
+    msgStr.concat("\"Warning (4 to 20 Packets missed)\"");
+    } else {                                       // More than 60s no Reception 
+    msgStr.concat("\"Error (more than one Minute without Data)\"");
+    } 
     msgStr.concat("}");    
     // Publish MQTT
     mqttPub(T_ISS, msgStr, true);      
@@ -1165,12 +1181,13 @@ void setupGlobalVars(void){
   g_longestBlackout = 0;  
   g_packetsReceived = 0;
   g_autoHops = 0;
-  g_numResyncs = 0;
+  g_BlackoutTag = false;
+  g_numBlackouts = 0;
   g_receivedStreak = 0;
   g_receivedStreakMax = 0;
   g_crcErrors = 0;  
   g_sendReceivedPackets = true;
-  g_sendIntervall = 30;
+  g_sendIntervall = 1800;
   g_lastDataSend = 0;
   // ISS Weather Data
   g_windSpeed = -1;
