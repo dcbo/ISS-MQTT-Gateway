@@ -9,6 +9,23 @@ Receive data from Davis Vantage Vue ISS - Weather Station and publish Measuremen
 ## Wireing
 ![Schematic](/doc/schematic.png)
 
+## Pictures
+### ESP32 Board with Connections
+![ESP32](/doc/01-ESP32.jpg)
+### RFM69 Board with Connections
+![RFM69](/doc/02-RFM69.jpg)
+### Both Board
+![Both Boards](/doc/03-BothBoards.jpg)
+### In the Box with exposed Antenna 
+![In the Box with Antenna exposed](/doc/04-BoxWithAntenna.jpg)
+### Antenna covered
+![Antenna covered](/doc/05-BoxAntennaCover.jpg)
+### 5V Power Supply
+![Power Supply Cable](/doc/07-PowerSupply.jpg)
+### Installed
+![Installed](/doc/08-BoxInstalled.jpg)
+
+
 ## Power Supply
   * ESP 32 via USB
   * Hope RFM69 via ESP32
