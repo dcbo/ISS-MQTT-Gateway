@@ -1,6 +1,7 @@
 .intern
 .pio
 .vscode
+releases/[0-9]
 data
 test
 platformio.ini
