@@ -861,10 +861,6 @@ void pollRadio(void) {
     msgStr = "HOP: RESYNC, new Channel:";
     msgStr.concat(String(radio.channel()));
   }
-  // Publish MQTT Message    
-  #if DEBUG_RFM
-    mqttPub(T_LOG "1", msgStr, true);  
-  #endif
   // Send Data for current Message ID      
   if (success && g_sendReceivedPackets) {
     sendIssData(msgID); 
