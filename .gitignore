@@ -2,6 +2,7 @@
 .pio
 .vscode
 releases/[0-9]
+firmware.bin
 data
 test
 platformio.ini
