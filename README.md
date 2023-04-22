@@ -54,13 +54,13 @@ Receive data from Davis Vantage Vue ISS - Weather Station and publish Measuremen
 * Responses are published to `[PREFIX]/result`
 
 ## Reset Daily Rain-Click Counter to 0
-### `cmd_newday`
+### `newday`
  Example:
- * command: `cmd_newday` 
+ * command: `newday` 
  * response: `Daily Rain-Click counter set to 0` :
 
 ## Set Rain-Click Counter
-### `cmd_setrc [newvalue]`
+### `setrc [newvalue]`
  Example:
  * command: `setrc 42` 
  * response: `Raincounter set to 42`

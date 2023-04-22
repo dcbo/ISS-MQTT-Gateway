@@ -1195,7 +1195,7 @@ void setupGlobalVars(void){
   g_outsideTemperature = 999;
   g_gustSpeed = -1;
   g_outsideHumidity = -1;
-  g_rainClicks = 0;
+  g_rainClicks = 255;
   g_rainClicksLast = 255;
   g_rainClicksDay = 0;
   g_rainClicksSum = 0;
